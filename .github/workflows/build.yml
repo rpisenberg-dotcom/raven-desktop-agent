@@ -1,0 +1,45 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Test
+        run: dotnet test tests/RavenAgent.Core.Tests -c Release --logger "console;verbosity=normal"
+
+      - name: Publish single-file exe
+        run: >
+          dotnet publish src/RavenAgent -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -o out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RavenAgent
+          path: out/RavenAgent.exe
+          if-no-files-found: error
+
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" out/RavenAgent.exe --title "Raven Desktop Agent ${{ github.ref_name }}" --notes "Download RavenAgent.exe and run it." 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release upload "${{ github.ref_name }}" out/RavenAgent.exe --clobber }

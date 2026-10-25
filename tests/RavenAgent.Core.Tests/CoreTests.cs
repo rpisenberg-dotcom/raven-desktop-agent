@@ -1,0 +1,159 @@
+using RavenAgent.Core;
+using Xunit;
+
+namespace RavenAgent.Core.Tests;
+
+public class SegmentBuilderTests
+{
+    static readonly DateTime T0 = new(2026, 10, 26, 13, 0, 0, DateTimeKind.Utc);
+    static readonly TimeSpan Every = TimeSpan.FromSeconds(5);
+
+    static Sample S(int sec, string proc, string title, bool idle = false, bool ignored = false) =>
+        new(T0.AddSeconds(sec), proc, title, idle, ignored);
+
+    static List<TimeLogRecord> Run(SegmentBuilder b, IEnumerable<Sample> samples, int flushAt)
+    {
+        var all = new List<TimeLogRecord>();
+        foreach (var s in samples) all.AddRange(b.Add(s));
+        all.AddRange(b.Flush(T0.AddSeconds(flushAt)));
+        return all;
+    }
+
+    [Fact]
+    public void Same_window_merges_into_one_segment()
+    {
+        var b = new SegmentBuilder("pc", Every);
+        var samples = Enumerable.Range(0, 13).Select(i => S(i * 5, "EXCEL", "Koplin_EMC_Audit.xlsx - Excel"));
+        var logs = Run(b, samples, 65);
+        var log = Assert.Single(logs);
+        Assert.Equal(1.08, log.DurationMinutes);
+        Assert.Equal("document", log.ActivityType);
+        Assert.Equal("2026-10-26T13:00:00Z", log.StartTime);
+    }
+
+    [Fact]
+    public void Switching_windows_closes_the_previous_segment()
+    {
+        var b = new SegmentBuilder("pc", Every);
+        var samples = Enumerable.Range(0, 12).Select(i => S(i * 5, "EXCEL", "A.xlsx - Excel"))
+            .Concat(Enumerable.Range(12, 12).Select(i => S(i * 5, "OUTLOOK", "Inbox - raven@clericalguru.com - Outlook")));
+        var logs = Run(b, samples, 120);
+        Assert.Equal(2, logs.Count);
+        Assert.Equal("2026-10-26T13:01:00Z", logs[0].EndTime);
+        Assert.Equal("email", logs[1].ActivityType);
+    }
+
+    [Fact]
+    public void Short_glances_are_dropped()
+    {
+        var b = new SegmentBuilder("pc", Every);
+        var samples = new[] { S(0, "EXCEL", "A"), S(5, "EXCEL", "A"), S(10, "chrome", "x"), S(15, "EXCEL", "A") };
+        var logs = Run(b, samples, 20);
+        Assert.Empty(logs);
+    }
+
+    [Fact]
+    public void Idle_and_ignored_time_is_not_recorded()
+    {
+        var b = new SegmentBuilder("pc", Every);
+        var samples = Enumerable.Range(0, 10).Select(i => S(i * 5, "EXCEL", "A"))
+            .Concat(Enumerable.Range(10, 100).Select(i => S(i * 5, "EXCEL", "A", idle: true)))
+            .Concat(Enumerable.Range(110, 10).Select(i => S(i * 5, "chrome", "Bank", ignored: true)));
+        var logs = Run(b, samples, 600);
+        var log = Assert.Single(logs);
+        Assert.Equal(0.83, log.DurationMinutes); // 50 seconds of real work
+    }
+
+    [Fact]
+    public void Long_segments_are_split()
+    {
+        var b = new SegmentBuilder("pc", Every, maxLength: TimeSpan.FromMinutes(15));
+        var samples = Enumerable.Range(0, 400).Select(i => S(i * 5, "WINWORD", "Letter.docx - Word")); // ~33 min
+        var logs = Run(b, samples, 2000);
+        Assert.Equal(3, logs.Count);
+        Assert.All(logs, l => Assert.True(l.DurationMinutes <= 15.01));
+        Assert.Equal(logs.Count, logs.Select(l => l.AgentKey).Distinct().Count());
+    }
+
+    [Fact]
+    public void Lock_screen_counts_as_away()
+    {
+        var b = new SegmentBuilder("pc", Every);
+        var samples = Enumerable.Range(0, 100).Select(i => S(i * 5, "LockApp", "Windows Default Lock Screen"));
+        Assert.Empty(Run(b, samples, 500));
+    }
+
+    [Fact]
+    public void Keys_are_stable_across_runs()
+    {
+        var a = Run(new SegmentBuilder("pc", Every), Enumerable.Range(0, 10).Select(i => S(i * 5, "EXCEL", "A")), 50);
+        var c = Run(new SegmentBuilder("pc", Every), Enumerable.Range(0, 10).Select(i => S(i * 5, "EXCEL", "A")), 50);
+        Assert.Equal(a[0].AgentKey, c[0].AgentKey);
+    }
+}
+
+public class ClassifierTests
+{
+    [Theory]
+    [InlineData("ms-teams.exe", "Meeting with Kent | Microsoft Teams", "meeting")]
+    [InlineData("Zoom.exe", "Zoom Meeting", "meeting")]
+    [InlineData("msedge.exe", "Fabcast - QuickBooks Online - Profile 1 - Microsoft Edge", "browser")]
+    [InlineData("chrome.exe", "Meet - abc-defg-hij - meet.google.com", "meeting")]
+    [InlineData("OUTLOOK.EXE", "Inbox - Outlook", "email")]
+    [InlineData("EXCEL.EXE", "Book1 - Excel", "document")]
+    [InlineData("ms-teams.exe", "Chat | Microsoft Teams", "app_usage")]
+    public void Activity_types(string proc, string title, string expected) =>
+        Assert.Equal(expected, Classifier.ActivityType(proc, title));
+
+    [Fact]
+    public void Private_windows_and_ignore_list_are_skipped()
+    {
+        Assert.True(Classifier.IsIgnored("msedge", "New tab - [InPrivate] - Microsoft Edge", [], []));
+        Assert.True(Classifier.IsIgnored("spotify.exe", "x", ["Spotify"], []));
+        Assert.True(Classifier.IsIgnored("chrome", "Chase Online - Banking", [], ["chase"]));
+        Assert.False(Classifier.IsIgnored("EXCEL", "Koplin.xlsx", ["Spotify"], ["chase"]));
+    }
+}
+
+public class OutlookFilterTests
+{
+    [Fact]
+    public void Dates_use_the_format_outlook_expects()
+    {
+        var d = new DateTime(2026, 10, 6, 14, 5, 0);
+        Assert.Equal("10/06/2026 02:05 PM", OutlookFilters.Date(d));
+        Assert.Equal("[ReceivedTime] >= '10/06/2026 02:05 PM'", OutlookFilters.Since("ReceivedTime", d));
+    }
+
+    [Fact]
+    public void Recurring_occurrences_get_different_ids()
+    {
+        var a = OutlookFilters.OccurrenceId("ENTRY1", new DateTime(2026, 10, 26, 9, 0, 0));
+        var b = OutlookFilters.OccurrenceId("ENTRY1", new DateTime(2026, 11, 2, 9, 0, 0));
+        Assert.NotEqual(a, b);
+    }
+}
+
+public class UploadQueueTests
+{
+    [Fact]
+    public void Queue_survives_restart_and_removes_sent_items()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"raven-q-{Guid.NewGuid():N}.json");
+        try
+        {
+            var q = new UploadQueue(path);
+            var log = new TimeLogRecord { AgentKey = "k1", StartTime = "a", EndTime = "b", DurationMinutes = 1, ActivityType = "app_usage" };
+            var mail = new EmailRecord { ExternalId = "m1", Subject = "s", FromEmail = "f@x.com", ReceivedDate = "d", Direction = "received" };
+            q.Add(new[] { log });
+            q.Add(new[] { mail });
+
+            var reopened = new UploadQueue(path);
+            Assert.Equal(2, reopened.Count);
+            var (logs, emails) = reopened.Peek(100);
+            reopened.Remove(logs, emails);
+            Assert.Equal(0, new UploadQueue(path).Count);
+        }
+        finally { File.Delete(path); }
+    }
+}

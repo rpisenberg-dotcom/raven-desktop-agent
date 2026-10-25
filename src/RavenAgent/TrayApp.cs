@@ -1,0 +1,231 @@
+using System.Drawing.Drawing2D;
+using System.Reflection;
+using Microsoft.Win32;
+using RavenAgent.Core;
+
+namespace RavenAgent;
+
+/// <summary>The agent itself: a tray icon that samples activity, reads Outlook and uploads on timers.</summary>
+sealed class TrayApp : ApplicationContext
+{
+    public static string Version =>
+        Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.1.0";
+
+    readonly AgentConfig _cfg;
+    readonly UploadQueue _queue;
+    readonly ActivitySampler _sampler;
+    readonly OutlookReader _outlook;
+    readonly IngestClient _client = new();
+    readonly NotifyIcon _tray;
+    readonly System.Windows.Forms.Timer _sampleTimer = new();
+    readonly System.Windows.Forms.Timer _uploadTimer = new();
+    readonly System.Windows.Forms.Timer _outlookTimer = new();
+    readonly ToolStripMenuItem _statusItem = new() { Enabled = false };
+    readonly ToolStripMenuItem _outlookItem = new() { Enabled = false };
+    readonly ToolStripMenuItem _pauseItem = new("Pause recording (private mode)") { CheckOnClick = true };
+    readonly ToolStripMenuItem _startupItem = new("Start with Windows") { CheckOnClick = true };
+
+    OutlookReader.Result? _pendingCalendar;
+    readonly object _calLock = new();
+    bool _uploading, _readingOutlook;
+    DateTime? _lastUploadOk;
+    string _lastError = "";
+
+    public TrayApp()
+    {
+        _cfg = AgentConfig.Load();
+        Log.Cleanup();
+        Log.Info($"Agent {Version} starting on {_cfg.DeviceId}");
+        _queue = new UploadQueue(Path.Combine(AgentConfig.DataFolder, "queue.json"));
+        _sampler = new ActivitySampler(_cfg, _queue);
+        _outlook = new OutlookReader(_cfg);
+
+        _pauseItem.Checked = _cfg.PrivateMode;
+        _pauseItem.CheckedChanged += (_, _) => SetPrivate(_pauseItem.Checked);
+        _startupItem.Checked = Startup.IsEnabled();
+        _startupItem.CheckedChanged += (_, _) => Startup.Set(_startupItem.Checked);
+
+        var menu = new ContextMenuStrip();
+        menu.Items.Add(new ToolStripMenuItem($"Raven Desktop Agent {Version}") { Enabled = false, Font = new Font(menu.Font, FontStyle.Bold) });
+        menu.Items.Add(_statusItem);
+        menu.Items.Add(_outlookItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(_pauseItem);
+        menu.Items.Add("Sync now", null, async (_, _) => { await ReadOutlookAsync(); await UploadAsync(); });
+        menu.Items.Add("Settings...", null, (_, _) => ShowSettings());
+        menu.Items.Add("Open log folder", null, (_, _) => OpenFolder(Log.Folder));
+        menu.Items.Add(_startupItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit", null, (_, _) => Shutdown());
+
+        _tray = new NotifyIcon { Icon = MakeIcon(false), ContextMenuStrip = menu, Visible = true, Text = "Raven" };
+        _tray.DoubleClick += (_, _) => ShowSettings();
+
+        _sampleTimer.Interval = _cfg.SampleSeconds * 1000;
+        _sampleTimer.Tick += (_, _) => { _sampler.Tick(); RefreshStatus(); };
+        _uploadTimer.Interval = _cfg.UploadSeconds * 1000;
+        _uploadTimer.Tick += async (_, _) => await UploadAsync();
+        _outlookTimer.Interval = _cfg.OutlookMinutes * 60 * 1000;
+        _outlookTimer.Tick += async (_, _) => await ReadOutlookAsync();
+
+        // Close the open segment when the PC sleeps or locks, so idle time isn't counted
+        SystemEvents.PowerModeChanged += (_, e) => { if (e.Mode == PowerModes.Suspend) _sampler.Flush(); };
+        SystemEvents.SessionSwitch += (_, e) => { if (e.Reason == SessionSwitchReason.SessionLock) _sampler.Flush(); };
+
+        _sampleTimer.Start();
+        _uploadTimer.Start();
+        _outlookTimer.Start();
+
+        if (!_cfg.IsConfigured)
+        {
+            _tray.ShowBalloonTip(5000, "Raven Desktop Agent", "Welcome! Enter your Clerical Guru address and agent key to start sending data.", ToolTipIcon.Info);
+            ShowSettings();
+        }
+        else
+        {
+            // First Outlook read shortly after start, once Windows has settled
+            var once = new System.Windows.Forms.Timer { Interval = 20000 };
+            once.Tick += async (_, _) => { once.Stop(); once.Dispose(); await ReadOutlookAsync(); await UploadAsync(); };
+            once.Start();
+        }
+        RefreshStatus();
+    }
+
+    void SetPrivate(bool on)
+    {
+        _cfg.PrivateMode = on;
+        _cfg.Save();
+        if (on) _sampler.Flush();
+        _tray.Icon = MakeIcon(on);
+        Log.Info(on ? "Private mode on" : "Private mode off");
+        RefreshStatus();
+    }
+
+    async Task ReadOutlookAsync()
+    {
+        if (_readingOutlook || _cfg.PrivateMode || !_cfg.ReadOutlook || !_cfg.IsConfigured) return;
+        _readingOutlook = true;
+        try
+        {
+            var since = _cfg.LastMailSyncUtc ?? DateTime.UtcNow.AddDays(-_cfg.FirstRunEmailDays);
+            var result = await OutlookReader.RunOnSta(() => _outlook.Read(since));
+            if (result != null)
+            {
+                if (result.Emails.Count > 0) _queue.Add(result.Emails);
+                lock (_calLock) _pendingCalendar = result;
+                // Small overlap so nothing slips between reads; the server ignores duplicates
+                _cfg.LastMailSyncUtc = result.ReadAtUtc.AddMinutes(-2);
+                _cfg.Save();
+                Log.Info(_outlook.Status);
+            }
+        }
+        catch (Exception ex) { Log.Error("Outlook cycle failed", ex); }
+        finally { _readingOutlook = false; RefreshStatus(); }
+    }
+
+    async Task UploadAsync()
+    {
+        if (_uploading || !_cfg.IsConfigured) return;
+        _uploading = true;
+        try
+        {
+            var (logs, emails) = _queue.Peek(400);
+            OutlookReader.Result? cal;
+            lock (_calLock) cal = _pendingCalendar;
+
+            var payload = new IngestPayload
+            {
+                DeviceId = _cfg.DeviceId,
+                AgentVersion = Version,
+                PrivateMode = _cfg.PrivateMode,
+                TimeLogs = logs,
+                Emails = emails,
+                CalendarEvents = cal?.Events ?? new(),
+                CalendarSyncs = cal?.Syncs ?? new(),
+            };
+            var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, payload);
+            if (res.Ok)
+            {
+                _queue.Remove(logs, emails);
+                lock (_calLock) if (ReferenceEquals(_pendingCalendar, cal)) _pendingCalendar = null;
+                _lastUploadOk = DateTime.Now;
+                if (_lastError != "") Log.Info("Uploads working again");
+                _lastError = "";
+            }
+            else
+            {
+                if (res.Message != _lastError) Log.Error($"Upload failed: {res.Message}");
+                _lastError = res.Message;
+            }
+        }
+        catch (Exception ex) { _lastError = ex.Message; Log.Error("Upload failed", ex); }
+        finally { _uploading = false; RefreshStatus(); }
+    }
+
+    void RefreshStatus()
+    {
+        string state = !_cfg.IsConfigured ? "Not set up - open Settings"
+            : _cfg.PrivateMode ? "Paused (private mode)"
+            : _lastError != "" ? $"Can't upload - {_lastError}"
+            : _lastUploadOk is { } t ? $"Recording - last sync {t:t}"
+            : "Recording";
+        var pending = _queue.Count;
+        _statusItem.Text = pending > 0 ? $"{state} ({pending} waiting)" : state;
+        _outlookItem.Text = _cfg.ReadOutlook ? $"Outlook: {_outlook.Status}" : "Outlook: off";
+        var tip = $"Raven - {state}";
+        _tray.Text = tip.Length > 63 ? tip[..63] : tip;
+    }
+
+    SettingsForm? _settings;
+    void ShowSettings()
+    {
+        if (_settings != null) { _settings.Activate(); return; }
+        using (_settings = new SettingsForm(_cfg))
+        {
+            if (_settings.ShowDialog() == DialogResult.OK)
+            {
+                Log.Info("Settings saved");
+                _ = UploadAsync();
+                _ = ReadOutlookAsync();
+            }
+        }
+        _settings = null;
+        RefreshStatus();
+    }
+
+    static void OpenFolder(string path)
+    {
+        Directory.CreateDirectory(path);
+        System.Diagnostics.Process.Start("explorer.exe", $"\"{path}\"");
+    }
+
+    void Shutdown()
+    {
+        Log.Info("Agent exiting");
+        _sampleTimer.Stop();
+        _uploadTimer.Stop();
+        _outlookTimer.Stop();
+        _sampler.Flush(); // saved to the queue on disk; sent on next start
+        _tray.Visible = false;
+        _tray.Dispose();
+        _client.Dispose();
+        ExitThread();
+    }
+
+    /// <summary>A purple "R" badge; grey when paused.</summary>
+    static Icon MakeIcon(bool paused)
+    {
+        using var bmp = new Bitmap(32, 32);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using var fill = new SolidBrush(paused ? Color.FromArgb(140, 140, 150) : Color.FromArgb(88, 64, 200));
+            g.FillEllipse(fill, 1, 1, 30, 30);
+            using var font = new Font("Segoe UI", 15f, FontStyle.Bold, GraphicsUnit.Pixel);
+            var size = g.MeasureString("R", font);
+            g.DrawString("R", font, Brushes.White, (32 - size.Width) / 2 + 1, (32 - size.Height) / 2 + 1);
+        }
+        return Icon.FromHandle(bmp.GetHicon());
+    }
+}
