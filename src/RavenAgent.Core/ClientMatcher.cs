@@ -53,8 +53,13 @@ public sealed class ClientMatcher
         _patterns.Sort((a, b) => b.Term.Length.CompareTo(a.Term.Length));
     }
 
-    /// <summary>The client mentioned most often in the text (ties go to the longer, more specific name).</summary>
-    public ClientMatch? MatchText(string? text)
+    /// <summary>
+    /// The client mentioned most often in the text (ties go to the longer, more specific name).
+    /// With <paramref name="requireClearWinner"/>, pages that show several clients (order lists,
+    /// customer dropdowns, reports) return no match unless one client clearly dominates, so the
+    /// guess doesn't flip back and forth on every re-read.
+    /// </summary>
+    public ClientMatch? MatchText(string? text, bool requireClearWinner = false)
     {
         if (string.IsNullOrWhiteSpace(text) || _patterns.Count == 0) return null;
         var counts = new Dictionary<string, (ClientEntry c, string term, int n)>();
@@ -68,7 +73,9 @@ public sealed class ClientMatcher
                 counts[p.Client.Id] = (p.Client, p.Term, n);
         }
         if (counts.Count == 0) return null;
-        var best = counts.Values.OrderByDescending(v => v.n).ThenByDescending(v => v.term.Length).First();
+        var ranked = counts.Values.OrderByDescending(v => v.n).ThenByDescending(v => v.term.Length).ToList();
+        var best = ranked[0];
+        if (requireClearWinner && ranked.Count > 1 && best.n < 2 * ranked[1].n) return null;
         return new ClientMatch(best.c.Id, best.c.Name, best.term, best.n);
     }
 

@@ -73,7 +73,7 @@ sealed class ScreenContext : IDisposable
                 if (_resultKey == target.Value.key && _result != null && DateTime.UtcNow - _result.ReadAt < Refresh) continue;
             }
             var text = ReadText(target.Value.hwnd);
-            var match = _clients.Matcher.MatchText(text);
+            var match = _clients.Matcher.MatchText(text, requireClearWinner: true);
             var detail = match != null ? $"On screen: {match.ClientName}" : null;
             lock (_lock)
             {

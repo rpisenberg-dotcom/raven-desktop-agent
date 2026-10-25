@@ -239,3 +239,28 @@ public class ClientMatcherTests
         Assert.Equal("f", all[1].ClientHintId);
     }
 }
+
+public class AmbiguityTests
+{
+    static ClientMatcher M() => new(new[]
+    {
+        new ClientEntry { Id = "b", Name = "Bare Bone Vodka" },
+        new ClientEntry { Id = "f", Name = "Fabcast Solutions", Terms = { "Fabcast" } },
+        new ClientEntry { Id = "h", Name = "Hudson Products Corporation", Terms = { "Hudson Products" } },
+    });
+
+    [Fact]
+    public void Lists_with_several_clients_give_no_screen_guess()
+    {
+        var orderList = "Orders\nBare Bone Vodka 2026-051\nFabcast Solutions 2026-052\nHudson Products 2026-053";
+        Assert.Null(M().MatchText(orderList, requireClearWinner: true));
+        Assert.NotNull(M().MatchText(orderList)); // titles/emails still use the plain best match
+    }
+
+    [Fact]
+    public void A_clearly_dominant_client_still_wins()
+    {
+        var order = "Order 2026-052 Fabcast Solutions\nBill to: Fabcast Solutions\nShip to: Fabcast\nRecent: Bare Bone Vodka";
+        Assert.Equal("f", M().MatchText(order, requireClearWinner: true)?.ClientId);
+    }
+}

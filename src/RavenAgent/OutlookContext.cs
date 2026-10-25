@@ -71,7 +71,8 @@ sealed class OutlookContext
         int cls = (int)item.Class;
         if (cls != olMail && cls != olAppointment && cls != olMeetingRequest) return (null, null);
 
-        string subject = Safe(() => (string)item.Subject) ?? "(no subject)";
+        string subject = Safe(() => (string)item.Subject) ?? "";
+        if (string.IsNullOrWhiteSpace(subject)) subject = "(no subject)";
         var people = new List<string?>();
         string? senderName = null, sender = null;
         if (cls == olMail || cls == olMeetingRequest)
@@ -97,7 +98,7 @@ sealed class OutlookContext
         var match = m.MatchAddresses(people) ?? m.MatchText($"{subject}\n{senderName}");
         var kind = cls == olAppointment ? "Meeting" : "Email";
         var who = senderName ?? sender;
-        var detail = $"{kind}: {Trim(subject, 120)}" + (who != null && cls != olAppointment ? $" — {Trim(who, 60)}" : "");
+        var detail = $"{kind}: {Trim(subject, 120)}" + (!string.IsNullOrWhiteSpace(who) && cls != olAppointment ? $" — {Trim(who!, 60)}" : "");
         return (detail, match);
     }
 
