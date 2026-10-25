@@ -33,6 +33,7 @@ sealed class TrayApp : ApplicationContext
     DateTime? _lastUploadOk;
     string _lastCalSig = "";
     List<string>? _mailboxes;
+    readonly List<EmailIdRecord> _idBackfill = new();
     DateTime _lastCalQueued = DateTime.MinValue;
     string _lastError = "";
 
@@ -132,6 +133,22 @@ sealed class TrayApp : ApplicationContext
                 _cfg.LastMailSyncUtc = result.ReadAtUtc.AddMinutes(-2);
                 _cfg.Save();
                 Log.Info(_outlook.Status);
+
+                // Once: send Outlook's ids for emails read by older versions, so "Open in Outlook" works for them
+                if (!_cfg.OutlookIdsBackfilled)
+                {
+                    var back = await OutlookReader.RunOnSta(() => _outlook.Read(DateTime.UtcNow.AddDays(-14)));
+                    if (back != null)
+                    {
+                        _idBackfill.AddRange(back.Emails.Where(e => !string.IsNullOrEmpty(e.OutlookEntryId)).Select(e => new EmailIdRecord
+                        {
+                            ExternalId = e.ExternalId, OutlookEntryId = e.OutlookEntryId!, OutlookStoreId = e.OutlookStoreId,
+                        }));
+                        _cfg.OutlookIdsBackfilled = true;
+                        _cfg.Save();
+                        Log.Info($"Sending Outlook ids for {_idBackfill.Count} earlier emails");
+                    }
+                }
             }
         }
         catch (Exception ex) { Log.Error("Outlook cycle failed", ex); }
@@ -149,7 +166,8 @@ sealed class TrayApp : ApplicationContext
             lock (_calLock) cal = _pendingCalendar;
             // Nothing new: skip the call (each one costs Base44 credits), but check in every 30 minutes
             // so client and mailbox settings still reach this PC
-            if (logs.Count == 0 && emails.Count == 0 && cal == null
+            var ids = _idBackfill.Take(300).ToList();
+            if (logs.Count == 0 && emails.Count == 0 && cal == null && ids.Count == 0
                 && _lastUploadOk is { } last && DateTime.Now - last < TimeSpan.FromMinutes(30)) return;
 
             var payload = new IngestPayload
@@ -162,6 +180,7 @@ sealed class TrayApp : ApplicationContext
                 CalendarEvents = cal?.Events ?? new(),
                 CalendarSyncs = cal?.Syncs ?? new(),
                 Mailboxes = _mailboxes,
+                EmailIds = ids.Count > 0 ? ids : null,
             };
             var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, payload);
             if (res.Ok)
@@ -176,6 +195,7 @@ sealed class TrayApp : ApplicationContext
                     Log.Info($"Not reading mail from: {string.Join(", ", ignored)}");
                 }
                 _queue.Remove(logs, emails);
+                _idBackfill.RemoveRange(0, Math.Min(ids.Count, _idBackfill.Count));
                 lock (_calLock) if (ReferenceEquals(_pendingCalendar, cal)) _pendingCalendar = null;
                 _lastUploadOk = DateTime.Now;
                 if (_lastError != "") Log.Info("Uploads working again");

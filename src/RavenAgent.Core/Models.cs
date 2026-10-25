@@ -92,4 +92,13 @@ public sealed record IngestPayload
     public List<CalendarSync> CalendarSyncs { get; init; } = new();
     /// <summary>Every mailbox loaded in Outlook (including ones Raven chose not to read).</summary>
     public List<string>? Mailboxes { get; init; }
+    /// <summary>Outlook ids for emails the app already has (sent once, so older emails can be opened in Outlook).</summary>
+    public List<EmailIdRecord>? EmailIds { get; init; }
+}
+
+public sealed record EmailIdRecord
+{
+    public required string ExternalId { get; init; }
+    public required string OutlookEntryId { get; init; }
+    public string? OutlookStoreId { get; init; }
 }
