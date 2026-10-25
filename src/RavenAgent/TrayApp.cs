@@ -31,6 +31,8 @@ sealed class TrayApp : ApplicationContext
     readonly object _calLock = new();
     bool _uploading, _readingOutlook;
     DateTime? _lastUploadOk;
+    string _lastCalSig = "";
+    DateTime _lastCalQueued = DateTime.MinValue;
     string _lastError = "";
 
     public TrayApp()
@@ -115,7 +117,14 @@ sealed class TrayApp : ApplicationContext
             if (result != null)
             {
                 if (result.Emails.Count > 0) _queue.Add(result.Emails);
-                lock (_calLock) _pendingCalendar = result;
+                // Only send the calendar when something changed (or every few hours as a safety net)
+                var sig = System.Text.Json.JsonSerializer.Serialize(new { result.Events, Ids = result.Syncs.Select(x => x.ExternalEventIds) }, Json.Options);
+                if (sig != _lastCalSig || DateTime.Now - _lastCalQueued > TimeSpan.FromHours(4))
+                {
+                    lock (_calLock) _pendingCalendar = result;
+                    _lastCalSig = sig;
+                    _lastCalQueued = DateTime.Now;
+                }
                 // Small overlap so nothing slips between reads; the server ignores duplicates
                 _cfg.LastMailSyncUtc = result.ReadAtUtc.AddMinutes(-2);
                 _cfg.Save();
@@ -135,6 +144,10 @@ sealed class TrayApp : ApplicationContext
             var (logs, emails) = _queue.Peek(400);
             OutlookReader.Result? cal;
             lock (_calLock) cal = _pendingCalendar;
+            // Nothing new: skip the call (each one costs Base44 credits), but check in every 30 minutes
+            // so client and mailbox settings still reach this PC
+            if (logs.Count == 0 && emails.Count == 0 && cal == null
+                && _lastUploadOk is { } last && DateTime.Now - last < TimeSpan.FromMinutes(30)) return;
 
             var payload = new IngestPayload
             {

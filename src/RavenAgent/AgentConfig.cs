@@ -14,7 +14,7 @@ sealed class AgentConfig
     public string DeviceId { get; set; } = "";
     public int SampleSeconds { get; set; } = 5;
     public int IdleMinutes { get; set; } = 5;
-    public int UploadSeconds { get; set; } = 60;
+    public int UploadSeconds { get; set; } = 300;
     public int OutlookMinutes { get; set; } = 5;
     public int FirstRunEmailDays { get; set; } = 2;
     public int CalendarDaysAhead { get; set; } = 120; // ~4 months, for planning travel etc.
@@ -63,6 +63,7 @@ sealed class AgentConfig
         try { cfg = File.Exists(FilePath) ? JsonSerializer.Deserialize<AgentConfig>(File.ReadAllText(FilePath), Opts) ?? new() : new(); }
         catch { cfg = new(); }
         if (cfg.CalendarDaysAhead == 14) cfg.CalendarDaysAhead = 120; // upgrade the old default
+        if (cfg.UploadSeconds < 300) cfg.UploadSeconds = 300; // each upload costs Base44 credits; every 5 minutes is plenty
         if (string.IsNullOrEmpty(cfg.DeviceId)) cfg.DeviceId = $"{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
         cfg.Save();
         return cfg;
