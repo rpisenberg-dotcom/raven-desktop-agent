@@ -35,11 +35,17 @@ jobs:
           path: out/RavenAgent.exe
           if-no-files-found: error
 
-      - name: Attach to release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish release (main branch)
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" out/RavenAgent.exe --title "Raven Desktop Agent ${{ github.ref_name }}" --notes "Download RavenAgent.exe and run it." 2>$null
-          if ($LASTEXITCODE -ne 0) { gh release upload "${{ github.ref_name }}" out/RavenAgent.exe --clobber }
+          [xml]$proj = Get-Content src/RavenAgent/RavenAgent.csproj
+          $tag = "v" + ($proj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag out/RavenAgent.exe --clobber
+          } else {
+            gh release create $tag out/RavenAgent.exe --target $env:GITHUB_SHA --title "Raven Desktop Agent $tag" --notes "Download RavenAgent.exe below and run it. See the README for setup."
+          }

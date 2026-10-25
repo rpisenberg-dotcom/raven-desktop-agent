@@ -10,8 +10,8 @@ Nothing is sent anywhere except your own Clerical Guru app.
 
 ## Install
 
-1. Go to the **Actions** tab of this repository, open the latest green **Build** run, and download **RavenAgent** under *Artifacts* (or download `RavenAgent.exe` from *Releases* once one is published).
-2. Unzip it and move `RavenAgent.exe` somewhere permanent, e.g. `C:\Users\<you>\RavenAgent\`.
+1. Download the latest `RavenAgent.exe`: https://github.com/rpisenberg-dotcom/raven-desktop-agent/releases/latest/download/RavenAgent.exe
+2. Move `RavenAgent.exe` somewhere permanent, e.g. `C:\Users\<you>\RavenAgent\`.
 3. Double-click it. Windows may warn *"Windows protected your PC"* because the app isn't code-signed yet: click **More info → Run anyway**.
 4. The Settings window opens. Fill in:
    - **Ingest URL** – the address of the `agentIngest` function in Base44 (Dashboard → Code → Functions → agentIngest; it looks like `https://<your-app>.base44.app/api/functions/agentIngest`).
@@ -46,4 +46,4 @@ Right-click the **R** icon:
 
 - `src/RavenAgent.Core` – platform-independent logic (time segments, classification, Outlook filters, upload queue), covered by tests in `tests/`.
 - `src/RavenAgent` – the Windows app (tray, window sampling, Outlook COM reader, uploader).
-- Every push to `main` builds and tests on GitHub's Windows runners and publishes `RavenAgent.exe` as an artifact. Pushing a tag like `v0.1.0` also creates a release.
+- Every push to `main` builds and tests on GitHub's Windows runners and publishes `RavenAgent.exe` to the release named after `<Version>` in `RavenAgent.csproj`. Bump the version to create a new release.
