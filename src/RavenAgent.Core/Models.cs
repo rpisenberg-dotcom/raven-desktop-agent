@@ -51,6 +51,9 @@ public sealed record EmailRecord
     public string? FolderPath { get; init; }
     public required string Direction { get; init; } // received | sent
     public bool IsRead { get; init; }
+    /// <summary>Outlook's own ids, so the app can open the original email in Outlook.</summary>
+    public string? OutlookEntryId { get; init; }
+    public string? OutlookStoreId { get; init; }
 }
 
 public sealed record CalendarRecord
@@ -87,4 +90,6 @@ public sealed record IngestPayload
     public List<EmailRecord> Emails { get; init; } = new();
     public List<CalendarRecord> CalendarEvents { get; init; } = new();
     public List<CalendarSync> CalendarSyncs { get; init; } = new();
+    /// <summary>Every mailbox loaded in Outlook (including ones Raven chose not to read).</summary>
+    public List<string>? Mailboxes { get; init; }
 }

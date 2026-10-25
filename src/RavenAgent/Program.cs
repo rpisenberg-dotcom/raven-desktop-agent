@@ -3,8 +3,16 @@ namespace RavenAgent;
 static class Program
 {
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        // "Open in Outlook" links from the Raven app: ravenagent://open-email?...
+        if (args.Length > 0 && args[0].StartsWith("ravenagent:", StringComparison.OrdinalIgnoreCase))
+        {
+            Application.EnableVisualStyles();
+            OutlookOpener.Open(args[0]);
+            return;
+        }
+
         // Only one copy per Windows user
         using var mutex = new Mutex(true, @"Local\RavenDesktopAgent", out var first);
         if (!first) return;

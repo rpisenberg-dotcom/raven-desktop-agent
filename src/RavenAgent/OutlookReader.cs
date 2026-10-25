@@ -22,7 +22,7 @@ sealed class OutlookReader
 
     public OutlookReader(AgentConfig cfg) => _cfg = cfg;
 
-    public sealed record Result(List<EmailRecord> Emails, List<CalendarRecord> Events, List<CalendarSync> Syncs, DateTime ReadAtUtc);
+    public sealed record Result(List<EmailRecord> Emails, List<CalendarRecord> Events, List<CalendarSync> Syncs, DateTime ReadAtUtc, List<string> Mailboxes);
 
     public static bool IsOutlookRunning() => Process.GetProcessesByName("OUTLOOK").Length > 0;
 
@@ -47,6 +47,7 @@ sealed class OutlookReader
             var calEnd = DateTime.Today.AddDays(_cfg.CalendarDaysAhead + 1);
             int mailboxes = 0;
             var skipped = new List<string>();
+            var allMailboxes = new List<string>();
 
             foreach (var (storeObj, label) in Mailboxes((object)ns))
             {
@@ -56,6 +57,7 @@ sealed class OutlookReader
                 {
                     dynamic store = storeObj;
                     storeName = SafeString(() => (string)store.DisplayName) ?? label;
+                    if (!allMailboxes.Contains(storeName)) allMailboxes.Add(storeName);
                     bool any = false;
 
                     // Mailboxes Raven marked "don't read" (personal accounts): calendar only, no mail
@@ -90,7 +92,7 @@ sealed class OutlookReader
 
             Status = $"Read {mailboxes} mailboxes at {DateTime.Now:t}: {emails.Count} new emails, {events.Count} calendar items"
                      + (skipped.Count > 0 ? $" ({skipped.Count} unavailable skipped)" : "");
-            return new Result(emails, events, syncs, started);
+            return new Result(emails, events, syncs, started, allMailboxes);
         }
         catch (COMException ex)
         {
@@ -260,6 +262,8 @@ sealed class OutlookReader
             FolderPath = folderPath,
             Direction = direction,
             IsRead = direction == "sent" || !(bool)m.UnRead,
+            OutlookEntryId = entryId,
+            OutlookStoreId = SafeString(() => (string)m.Parent.StoreID),
         };
     }
 

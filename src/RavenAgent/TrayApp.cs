@@ -32,6 +32,7 @@ sealed class TrayApp : ApplicationContext
     bool _uploading, _readingOutlook;
     DateTime? _lastUploadOk;
     string _lastCalSig = "";
+    List<string>? _mailboxes;
     DateTime _lastCalQueued = DateTime.MinValue;
     string _lastError = "";
 
@@ -47,6 +48,7 @@ sealed class TrayApp : ApplicationContext
 
         _pauseItem.Checked = _cfg.PrivateMode;
         _pauseItem.CheckedChanged += (_, _) => SetPrivate(_pauseItem.Checked);
+        Startup.RegisterLinkHandler();
         _startupItem.Checked = Startup.IsEnabled();
         _startupItem.CheckedChanged += (_, _) => Startup.Set(_startupItem.Checked);
 
@@ -117,6 +119,7 @@ sealed class TrayApp : ApplicationContext
             if (result != null)
             {
                 if (result.Emails.Count > 0) _queue.Add(result.Emails);
+                _mailboxes = result.Mailboxes;
                 // Only send the calendar when something changed (or every few hours as a safety net)
                 var sig = System.Text.Json.JsonSerializer.Serialize(new { result.Events, Ids = result.Syncs.Select(x => x.ExternalEventIds) }, Json.Options);
                 if (sig != _lastCalSig || DateTime.Now - _lastCalQueued > TimeSpan.FromHours(4))
@@ -158,6 +161,7 @@ sealed class TrayApp : ApplicationContext
                 Emails = emails,
                 CalendarEvents = cal?.Events ?? new(),
                 CalendarSyncs = cal?.Syncs ?? new(),
+                Mailboxes = _mailboxes,
             };
             var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, payload);
             if (res.Ok)
