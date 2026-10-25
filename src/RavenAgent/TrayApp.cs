@@ -16,6 +16,8 @@ sealed class TrayApp : ApplicationContext
     readonly ActivitySampler _sampler;
     readonly OutlookReader _outlook;
     readonly IngestClient _client = new();
+    readonly ClientDirectory _clients = new();
+    readonly ScreenContext _screen;
     readonly NotifyIcon _tray;
     readonly System.Windows.Forms.Timer _sampleTimer = new();
     readonly System.Windows.Forms.Timer _uploadTimer = new();
@@ -37,7 +39,8 @@ sealed class TrayApp : ApplicationContext
         Log.Cleanup();
         Log.Info($"Agent {Version} starting on {_cfg.DeviceId}");
         _queue = new UploadQueue(Path.Combine(AgentConfig.DataFolder, "queue.json"));
-        _sampler = new ActivitySampler(_cfg, _queue);
+        _screen = new ScreenContext(_clients);
+        _sampler = new ActivitySampler(_cfg, _queue, _clients, _screen, new OutlookContext(_clients));
         _outlook = new OutlookReader(_cfg);
 
         _pauseItem.Checked = _cfg.PrivateMode;
@@ -146,6 +149,8 @@ sealed class TrayApp : ApplicationContext
             var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, payload);
             if (res.Ok)
             {
+                var directory = IngestClient.ParseClientDirectory(res.Message);
+                if (directory != null) _clients.Update(directory);
                 _queue.Remove(logs, emails);
                 lock (_calLock) if (ReferenceEquals(_pendingCalendar, cal)) _pendingCalendar = null;
                 _lastUploadOk = DateTime.Now;
@@ -171,7 +176,7 @@ sealed class TrayApp : ApplicationContext
             : "Recording";
         var pending = _queue.Count;
         _statusItem.Text = pending > 0 ? $"{state} ({pending} waiting)" : state;
-        _outlookItem.Text = _cfg.ReadOutlook ? $"Outlook: {_outlook.Status}" : "Outlook: off";
+        _outlookItem.Text = (_cfg.ReadOutlook ? $"Outlook: {_outlook.Status}" : "Outlook: off") + $" · {_clients.Count} clients known";
         var tip = $"Raven - {state}";
         _tray.Text = tip.Length > 63 ? tip[..63] : tip;
     }
@@ -209,6 +214,7 @@ sealed class TrayApp : ApplicationContext
         _tray.Visible = false;
         _tray.Dispose();
         _client.Dispose();
+        _screen.Dispose();
         ExitThread();
     }
 

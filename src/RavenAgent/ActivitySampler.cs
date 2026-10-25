@@ -8,13 +8,19 @@ sealed class ActivitySampler
     readonly AgentConfig _cfg;
     readonly UploadQueue _queue;
     readonly SegmentBuilder _builder;
+    readonly ClientDirectory _clients;
+    readonly ScreenContext _screen;
+    readonly OutlookContext _outlook;
 
     public string CurrentWindow { get; private set; } = "";
 
-    public ActivitySampler(AgentConfig cfg, UploadQueue queue)
+    public ActivitySampler(AgentConfig cfg, UploadQueue queue, ClientDirectory clients, ScreenContext screen, OutlookContext outlook)
     {
         _cfg = cfg;
         _queue = queue;
+        _clients = clients;
+        _screen = screen;
+        _outlook = outlook;
         _builder = new SegmentBuilder(cfg.DeviceId, TimeSpan.FromSeconds(cfg.SampleSeconds));
     }
 
@@ -38,7 +44,32 @@ sealed class ActivitySampler
 
             CurrentWindow = idle ? "Idle" : ignored ? "Private window" : $"{process}: {title}";
             var url = idle || ignored ? null : BrowserUrl.TryGet(hwnd, process, title);
-            Enqueue(_builder.Add(new Sample(now, process, title, idle, ignored, url)));
+
+            // Which client is this about? Selected email in Outlook, names on screen elsewhere, then the title
+            string? detail = null, source = null;
+            ClientMatch? match = null;
+            if (!idle && !ignored)
+            {
+                if (OutlookContext.Handles(process))
+                {
+                    (detail, match) = _outlook.Get();
+                    source = "email";
+                }
+                else if (ScreenContext.Handles(process))
+                {
+                    var r = _screen.Get(hwnd, process, title, url);
+                    if (r != null) { detail = r.Detail; match = r.Match; }
+                    source = "screen";
+                }
+                if (match == null)
+                {
+                    match = _clients.Matcher.MatchText(title);
+                    if (match != null) source = "title";
+                }
+                if (match != null) CurrentWindow += $" [{match.ClientName}]";
+            }
+            Enqueue(_builder.Add(new Sample(now, process, title, idle, ignored, url,
+                detail, match?.ClientId, match?.Term, match != null ? source : null)));
         }
         catch (Exception ex) { Log.Error("Sampling failed", ex); }
     }

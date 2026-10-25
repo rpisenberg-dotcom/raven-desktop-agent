@@ -171,3 +171,71 @@ public class UrlTests
         Assert.Equal("https://qbo.intuit.com/app/homepage", log.Url);
     }
 }
+
+public class ClientMatcherTests
+{
+    static ClientMatcher M() => new(new[]
+    {
+        new ClientEntry { Id = "k", Name = "Koplin Construction", Terms = { "Koplin" }, Domains = { "koplinconstruction.com" } },
+        new ClientEntry { Id = "f", Name = "Fabcast", Terms = { "Fabcast Inc" }, Domains = { "fabcast.com" }, Emails = { "owner@gmail.com" } },
+        new ClientEntry { Id = "a", Name = "ABC", Terms = { } },
+    });
+
+    [Fact]
+    public void Finds_the_client_named_on_a_qbo_page()
+    {
+        var page = "QuickBooks Accountant  Koplin Construction  Bank transactions  For review  Categorized";
+        var m = M().MatchText(page);
+        Assert.Equal("k", m?.ClientId);
+        Assert.Equal("Koplin Construction", m?.Term);
+    }
+
+    [Fact]
+    public void Most_mentioned_client_wins_in_a_chat()
+    {
+        var chat = "Draft an email to Kent at Koplin about the audit. Koplin's payroll... Also cc Fabcast? Koplin wants it Friday.";
+        Assert.Equal("k", M().MatchText(chat)?.ClientId);
+    }
+
+    [Fact]
+    public void Matches_file_names_with_underscores()
+    {
+        Assert.Equal("k", M().MatchText("Koplin_EMC_Audit.xlsx - Excel")?.ClientId);
+        Assert.Equal("k", M().MatchText("koplin-construction-q3.pdf")?.ClientId);
+    }
+
+    [Fact]
+    public void Whole_words_only()
+    {
+        Assert.Null(M().MatchText("ABCD report and Fabcastle pages"));
+        Assert.Equal("a", M().MatchText("Notes for ABC, Q3")?.ClientId);
+    }
+
+    [Fact]
+    public void Email_addresses_match_by_domain_or_exact_address()
+    {
+        Assert.Equal("k", M().MatchAddresses(new[] { "raven@clericalguru.com", "Jodi@KoplinConstruction.com" })?.ClientId);
+        Assert.Equal("f", M().MatchAddresses(new[] { "owner@gmail.com" })?.ClientId);
+        Assert.Equal("k", M().MatchAddresses(new[] { "x@mail.koplinconstruction.com" })?.ClientId);
+        Assert.Null(M().MatchAddresses(new[] { "someone@gmail.com" }));
+    }
+
+    [Fact]
+    public void A_late_client_hint_is_adopted_not_split()
+    {
+        var t0 = new DateTime(2026, 10, 26, 13, 0, 0, DateTimeKind.Utc);
+        var b = new SegmentBuilder("pc", TimeSpan.FromSeconds(5));
+        var all = new List<TimeLogRecord>();
+        for (var i = 0; i < 10; i++)
+            all.AddRange(b.Add(new Sample(t0.AddSeconds(i * 5), "claude", "Claude", false, false, null,
+                i < 3 ? null : "On screen: Koplin Construction", i < 3 ? null : "k", i < 3 ? null : "Koplin")));
+        // switching client mid-window splits the block
+        for (var i = 10; i < 20; i++)
+            all.AddRange(b.Add(new Sample(t0.AddSeconds(i * 5), "claude", "Claude", false, false, null, "On screen: Fabcast", "f", "Fabcast")));
+        all.AddRange(b.Flush(t0.AddSeconds(100)));
+        Assert.Equal(2, all.Count);
+        Assert.Equal("k", all[0].ClientHintId);
+        Assert.Equal("On screen: Koplin Construction", all[0].Detail);
+        Assert.Equal("f", all[1].ClientHintId);
+    }
+}

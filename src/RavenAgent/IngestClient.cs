@@ -35,6 +35,18 @@ sealed class IngestClient : IDisposable
         catch (HttpRequestException ex) { return new(false, $"Couldn't reach Clerical Guru: {ex.Message}"); }
     }
 
+    /// <summary>The server's reply includes the current client list (names, aliases, domains) for on-PC matching.</summary>
+    public static List<ClientEntry>? ParseClientDirectory(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("client_directory", out var dir) || dir.ValueKind != JsonValueKind.Array) return null;
+            return dir.Deserialize<List<ClientEntry>>(Json.Options);
+        }
+        catch { return null; }
+    }
+
     static string Trim(string s) => s.Length > 200 ? s[..200] : s;
 
     public void Dispose() => _http.Dispose();

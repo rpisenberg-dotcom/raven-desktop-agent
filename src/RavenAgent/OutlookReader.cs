@@ -64,14 +64,13 @@ sealed class OutlookReader
                     var sent = TryFolder(storeObj, olFolderSentMail);
                     if (sent != null) { ReadMail(sent, storeName, "sent", "SentOn", sinceLocal, emails); any = true; }
 
-                    var cal = TryFolder(storeObj, olFolderCalendar);
-                    if (cal != null)
+                    foreach (var (calObj, calName) in CalendarFolders(storeObj, storeName))
                     {
-                        var ids = ReadCalendar(cal, storeName, calStart, calEnd, events);
+                        var ids = ReadCalendar(calObj, calName, calStart, calEnd, events);
                         if (ids != null)
                             syncs.Add(new CalendarSync
                             {
-                                SourceCalendar = storeName,
+                                SourceCalendar = calName,
                                 WindowStart = Json.Iso(calStart.ToUniversalTime()),
                                 WindowEnd = Json.Iso(calEnd.ToUniversalTime()),
                                 ExternalEventIds = ids,
@@ -150,6 +149,59 @@ sealed class OutlookReader
         }
         catch (Exception ex) { Log.Error("Couldn't list Outlook mailboxes", ex); }
         return list;
+    }
+
+    const int olAppointmentItem = 1; // a folder whose default item type is appointments = a calendar
+
+    /// <summary>
+    /// Every calendar in a mailbox: the main one (named after the mailbox) plus extra calendars,
+    /// subscribed internet calendars and shared ones stored as folders (named "Mailbox / Folder").
+    /// </summary>
+    static List<(object folder, string name)> CalendarFolders(object storeObj, string storeName)
+    {
+        var found = new List<(object, string)>();
+        string? defaultId = null;
+        var main = TryFolder(storeObj, olFolderCalendar);
+        if (main != null)
+        {
+            found.Add((main, storeName));
+            defaultId = SafeString(() => (string)((dynamic)main).EntryID);
+        }
+        try
+        {
+            dynamic store = storeObj;
+            dynamic root = store.GetRootFolder();
+            var queue = new Queue<(object f, int depth)>();
+            queue.Enqueue(((object)root, 0));
+            while (queue.Count > 0 && found.Count < 25)
+            {
+                var (fObj, depth) = queue.Dequeue();
+                dynamic f = fObj;
+                dynamic subs;
+                try { subs = f.Folders; } catch { continue; }
+                int n = SafeInt(() => (int)subs.Count);
+                for (int i = 1; i <= n && found.Count < 25; i++)
+                {
+                    try
+                    {
+                        dynamic sub = subs.Item(i);
+                        if (SafeInt(() => (int)sub.DefaultItemType, -1) == olAppointmentItem)
+                        {
+                            string id = SafeString(() => (string)sub.EntryID) ?? "";
+                            if (id != defaultId)
+                            {
+                                string name = SafeString(() => (string)sub.Name) ?? "Calendar";
+                                found.Add(((object)sub, $"{storeName} / {name}"));
+                            }
+                        }
+                        if (depth < 3) queue.Enqueue(((object)sub, depth + 1));
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+        return found;
     }
 
     static object? TryFolder(object storeObj, int kind)

@@ -29,6 +29,12 @@ public sealed record TimeLogRecord
     public string? WindowTitle { get; init; }
     public string? Url { get; init; }
     public string? FilePath { get; init; }
+    /// <summary>What was on screen beyond the title, e.g. "Email: RE: Audit (jodi@koplin.com)".</summary>
+    public string? Detail { get; init; }
+    /// <summary>Client the agent found on screen or in the selected email (matched on this PC).</summary>
+    public string? ClientHintId { get; init; }
+    public string? ClientHintTerm { get; init; }
+    public string? ClientHintSource { get; init; } // screen | email | title
 }
 
 public sealed record EmailRecord
