@@ -63,9 +63,19 @@ public sealed class ClientMatcher
     {
         if (string.IsNullOrWhiteSpace(text) || _patterns.Count == 0) return null;
         var counts = new Dictionary<string, (ClientEntry c, string term, int n)>();
+        // Patterns run longest-first; a shorter alias inside an already-counted longer name
+        // ("Fabcast" inside "Fabcast Solutions") is the same mention and isn't counted again
+        var taken = new Dictionary<string, List<(int start, int end)>>();
         foreach (var p in _patterns)
         {
-            var n = p.Regex.Matches(text).Count;
+            if (!taken.TryGetValue(p.Client.Id, out var spans)) taken[p.Client.Id] = spans = new();
+            var n = 0;
+            foreach (Match m in p.Regex.Matches(text))
+            {
+                if (spans.Any(sp => m.Index < sp.end && m.Index + m.Length > sp.start)) continue;
+                spans.Add((m.Index, m.Index + m.Length));
+                n++;
+            }
             if (n == 0) continue;
             if (counts.TryGetValue(p.Client.Id, out var cur))
                 counts[p.Client.Id] = (cur.c, cur.term, cur.n + n); // keep the longest term (seen first)
