@@ -122,7 +122,7 @@ sealed class OutlookReader
             {
                 try
                 {
-                    if ((int)item.Class != olMail) continue;
+                    if ((int)item!.Class != olMail) continue;
                     EmailRecord? rec = ToEmail((object)item, storeName, folderPath, direction);
                     if (rec != null) { into.Add(rec); n++; }
                 }
@@ -212,7 +212,7 @@ sealed class OutlookReader
             {
                 try
                 {
-                    if ((int)a.Class != olAppointment) continue;
+                    if ((int)a!.Class != olAppointment) continue;
                     DateTime start = (DateTime)a.Start, end = (DateTime)a.End;
                     if (start >= endLocal) break; // sorted, so nothing later matters
                     var id = OutlookFilters.OccurrenceId((string)a.EntryID, start);
