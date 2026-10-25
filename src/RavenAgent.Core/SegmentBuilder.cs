@@ -1,7 +1,7 @@
 namespace RavenAgent.Core;
 
 /// <summary>One look at the screen: which window was in front, and whether Raven was active.</summary>
-public readonly record struct Sample(DateTime Utc, string Process, string Title, bool Idle, bool Ignored);
+public readonly record struct Sample(DateTime Utc, string Process, string Title, bool Idle, bool Ignored, string? Url = null);
 
 /// <summary>
 /// Merges a stream of samples (taken every few seconds) into time segments:
@@ -15,7 +15,7 @@ public sealed class SegmentBuilder
     readonly TimeSpan _minLength;
     readonly TimeSpan _maxLength;
 
-    string? _process, _title;
+    string? _process, _title, _url;
     DateTime _start, _last;
 
     public SegmentBuilder(string deviceId, TimeSpan sampleInterval, TimeSpan? minLength = null, TimeSpan? maxLength = null)
@@ -41,6 +41,7 @@ public sealed class SegmentBuilder
             if (same)
             {
                 _last = s.Utc;
+                _url ??= s.Url;
                 if (_last - _start >= _maxLength)
                 {
                     Close(done, _last);
@@ -73,6 +74,7 @@ public sealed class SegmentBuilder
     {
         _process = s.Process;
         _title = s.Title;
+        _url = s.Url;
         _start = s.Utc;
         _last = s.Utc;
     }
@@ -91,10 +93,12 @@ public sealed class SegmentBuilder
                 ActivityType = Classifier.ActivityType(_process, _title ?? ""),
                 App = _process,
                 WindowTitle = Truncate(_title, 400),
+                Url = _url,
             });
         }
         _process = null;
         _title = null;
+        _url = null;
     }
 
     static string? Truncate(string? s, int max) => s == null || s.Length <= max ? s : s[..max];

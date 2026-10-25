@@ -42,44 +42,53 @@ sealed class OutlookReader
             if (type == null) { Status = "Classic Outlook isn't installed"; return null; }
             app = Activator.CreateInstance(type)!; // attaches to the running Outlook
             dynamic ns = app.GetNamespace("MAPI");
-            dynamic stores = ns.Stores;
-            int storeCount = stores.Count;
-
             var sinceLocal = mailSinceUtc.ToLocalTime();
             var calStart = DateTime.Today;
             var calEnd = DateTime.Today.AddDays(_cfg.CalendarDaysAhead + 1);
             int mailboxes = 0;
+            var skipped = new List<string>();
 
-            for (int i = 1; i <= storeCount; i++)
+            foreach (var (storeObj, label) in Mailboxes((object)ns))
             {
-                dynamic store = stores.Item(i);
-                string storeName = SafeString(() => (string)store.DisplayName) ?? $"Mailbox {i}";
-                bool any = false;
-
-                var inbox = TryFolder((object)store, olFolderInbox);
-                if (inbox != null) { ReadMail(inbox, storeName, "received", "ReceivedTime", sinceLocal, emails); any = true; }
-
-                var sent = TryFolder((object)store, olFolderSentMail);
-                if (sent != null) { ReadMail(sent, storeName, "sent", "SentOn", sinceLocal, emails); any = true; }
-
-                var cal = TryFolder((object)store, olFolderCalendar);
-                if (cal != null)
+                // One broken mailbox (e.g. a .pst on a disconnected drive) must not stop the others
+                string storeName = label;
+                try
                 {
-                    var ids = ReadCalendar(cal, storeName, calStart, calEnd, events);
-                    if (ids != null)
-                        syncs.Add(new CalendarSync
-                        {
-                            SourceCalendar = storeName,
-                            WindowStart = Json.Iso(calStart.ToUniversalTime()),
-                            WindowEnd = Json.Iso(calEnd.ToUniversalTime()),
-                            ExternalEventIds = ids,
-                        });
-                    any = true;
+                    dynamic store = storeObj;
+                    storeName = SafeString(() => (string)store.DisplayName) ?? label;
+                    bool any = false;
+
+                    var inbox = TryFolder(storeObj, olFolderInbox);
+                    if (inbox != null) { ReadMail(inbox, storeName, "received", "ReceivedTime", sinceLocal, emails); any = true; }
+
+                    var sent = TryFolder(storeObj, olFolderSentMail);
+                    if (sent != null) { ReadMail(sent, storeName, "sent", "SentOn", sinceLocal, emails); any = true; }
+
+                    var cal = TryFolder(storeObj, olFolderCalendar);
+                    if (cal != null)
+                    {
+                        var ids = ReadCalendar(cal, storeName, calStart, calEnd, events);
+                        if (ids != null)
+                            syncs.Add(new CalendarSync
+                            {
+                                SourceCalendar = storeName,
+                                WindowStart = Json.Iso(calStart.ToUniversalTime()),
+                                WindowEnd = Json.Iso(calEnd.ToUniversalTime()),
+                                ExternalEventIds = ids,
+                            });
+                        any = true;
+                    }
+                    if (any) mailboxes++;
                 }
-                if (any) mailboxes++;
+                catch (Exception ex)
+                {
+                    skipped.Add(storeName);
+                    WarnOnce(storeName, ex);
+                }
             }
 
-            Status = $"Read {mailboxes} mailboxes at {DateTime.Now:t}: {emails.Count} new emails, {events.Count} calendar items";
+            Status = $"Read {mailboxes} mailboxes at {DateTime.Now:t}: {emails.Count} new emails, {events.Count} calendar items"
+                     + (skipped.Count > 0 ? $" ({skipped.Count} unavailable skipped)" : "");
             return new Result(emails, events, syncs, started);
         }
         catch (COMException ex)
@@ -100,6 +109,47 @@ sealed class OutlookReader
             GC.Collect();
             GC.WaitForPendingFinalizers();
         }
+    }
+
+    readonly HashSet<string> _warned = new();
+    void WarnOnce(string storeName, Exception ex)
+    {
+        if (_warned.Add(storeName)) Log.Error($"Skipping mailbox '{storeName}' (unavailable)", ex);
+    }
+
+    /// <summary>Every mailbox/data file in the Outlook profile, skipping ones that can't even be opened.</summary>
+    IEnumerable<(object store, string label)> Mailboxes(object nsObj)
+    {
+        dynamic ns = nsObj;
+        var list = new List<(object, string)>();
+        int count = 0;
+        dynamic? stores = null;
+        try { stores = ns.Stores; count = (int)stores.Count; }
+        catch (Exception ex) { Log.Error("Couldn't list Outlook stores; trying top-level folders", ex); }
+
+        if (stores != null)
+        {
+            for (int i = 1; i <= count; i++)
+            {
+                try { list.Add(((object)stores.Item(i), $"Mailbox {i}")); }
+                catch (Exception ex) { WarnOnce($"Mailbox {i}", ex); }
+            }
+            return list;
+        }
+
+        // Fallback: top-level folders, one per mailbox
+        try
+        {
+            dynamic folders = ns.Folders;
+            int n = (int)folders.Count;
+            for (int i = 1; i <= n; i++)
+            {
+                try { dynamic f = folders.Item(i); list.Add(((object)f.Store, (string)f.Name)); }
+                catch (Exception ex) { WarnOnce($"Mailbox {i}", ex); }
+            }
+        }
+        catch (Exception ex) { Log.Error("Couldn't list Outlook mailboxes", ex); }
+        return list;
     }
 
     static object? TryFolder(object storeObj, int kind)

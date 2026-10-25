@@ -3,12 +3,13 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <AssemblyName>RavenAgent</AssemblyName>
     <RootNamespace>RavenAgent</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Product>Raven Desktop Agent</Product>
     <Company>Clerical Guru Inc.</Company>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>

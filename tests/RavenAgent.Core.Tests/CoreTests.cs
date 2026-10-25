@@ -157,3 +157,17 @@ public class UploadQueueTests
         finally { File.Delete(path); }
     }
 }
+
+public class UrlTests
+{
+    [Fact]
+    public void Segments_keep_the_browser_address()
+    {
+        var t0 = new DateTime(2026, 10, 26, 13, 0, 0, DateTimeKind.Utc);
+        var b = new SegmentBuilder("pc", TimeSpan.FromSeconds(5));
+        foreach (var i in Enumerable.Range(0, 10))
+            b.Add(new Sample(t0.AddSeconds(i * 5), "msedge", "Fabcast - QuickBooks", false, false, "https://qbo.intuit.com/app/homepage"));
+        var log = Assert.Single(b.Flush(t0.AddSeconds(50)));
+        Assert.Equal("https://qbo.intuit.com/app/homepage", log.Url);
+    }
+}

@@ -16,16 +16,16 @@ static class Native
     struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
 
     /// <summary>Process name (e.g. "EXCEL") and title of the window in front, or empty strings.</summary>
-    public static (string process, string title) ForegroundWindow()
+    public static (IntPtr hwnd, string process, string title) ForegroundWindow()
     {
         var hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero) return ("", "");
+        if (hwnd == IntPtr.Zero) return (IntPtr.Zero, "", "");
         var sb = new StringBuilder(512);
         GetWindowText(hwnd, sb, sb.Capacity);
         GetWindowThreadProcessId(hwnd, out var pid);
         string process = "";
         try { using var p = Process.GetProcessById((int)pid); process = p.ProcessName; } catch { }
-        return (process, sb.ToString());
+        return (hwnd, process, sb.ToString());
     }
 
     /// <summary>How long since the last keyboard or mouse input.</summary>

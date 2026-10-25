@@ -31,13 +31,14 @@ sealed class ActivitySampler
                 return;
             }
 
-            var (process, title) = Native.ForegroundWindow();
+            var (hwnd, process, title) = Native.ForegroundWindow();
             // Listening in a meeting isn't idle, even without typing
             var idle = Native.IdleTime() >= TimeSpan.FromMinutes(_cfg.IdleMinutes) && !Classifier.IsMeeting(process, title);
             var ignored = Classifier.IsIgnored(process, title, _cfg.IgnoreApps, _cfg.IgnoreTitleWords);
 
             CurrentWindow = idle ? "Idle" : ignored ? "Private window" : $"{process}: {title}";
-            Enqueue(_builder.Add(new Sample(now, process, title, idle, ignored)));
+            var url = idle || ignored ? null : BrowserUrl.TryGet(hwnd, process, title);
+            Enqueue(_builder.Add(new Sample(now, process, title, idle, ignored, url)));
         }
         catch (Exception ex) { Log.Error("Sampling failed", ex); }
     }
