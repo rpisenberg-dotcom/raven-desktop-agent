@@ -24,6 +24,8 @@ sealed class AgentConfig
     public bool PrivateMode { get; set; }
     public List<string> IgnoreApps { get; set; } = new() { "Spotify", "Netflix" };
     public List<string> IgnoreTitleWords { get; set; } = new();
+    /// <summary>Mailboxes Raven chose not to have read (set in Clerical Guru, sent with each upload reply).</summary>
+    public List<string> IgnoredMailboxes { get; set; } = new();
 
     // Sync bookmarks
     public DateTime? LastMailSyncUtc { get; set; }

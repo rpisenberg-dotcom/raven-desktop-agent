@@ -47,6 +47,18 @@ sealed class IngestClient : IDisposable
         catch { return null; }
     }
 
+    /// <summary>Mailboxes marked "don't read" in Clerical Guru; null if the reply doesn't say.</summary>
+    public static List<string>? ParseIgnoredMailboxes(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("ignored_mailboxes", out var list) || list.ValueKind != JsonValueKind.Array) return null;
+            return list.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!).ToList();
+        }
+        catch { return null; }
+    }
+
     static string Trim(string s) => s.Length > 200 ? s[..200] : s;
 
     public void Dispose() => _http.Dispose();

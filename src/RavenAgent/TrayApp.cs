@@ -151,6 +151,13 @@ sealed class TrayApp : ApplicationContext
             {
                 var directory = IngestClient.ParseClientDirectory(res.Message);
                 if (directory != null) _clients.Update(directory);
+                var ignored = IngestClient.ParseIgnoredMailboxes(res.Message);
+                if (ignored != null && !ignored.SequenceEqual(_cfg.IgnoredMailboxes))
+                {
+                    _cfg.IgnoredMailboxes = ignored;
+                    _cfg.Save();
+                    Log.Info($"Not reading mail from: {string.Join(", ", ignored)}");
+                }
                 _queue.Remove(logs, emails);
                 lock (_calLock) if (ReferenceEquals(_pendingCalendar, cal)) _pendingCalendar = null;
                 _lastUploadOk = DateTime.Now;

@@ -58,10 +58,12 @@ sealed class OutlookReader
                     storeName = SafeString(() => (string)store.DisplayName) ?? label;
                     bool any = false;
 
-                    var inbox = TryFolder(storeObj, olFolderInbox);
+                    // Mailboxes Raven marked "don't read" (personal accounts): calendar only, no mail
+                    var readMail = !_cfg.IgnoredMailboxes.Contains(storeName, StringComparer.OrdinalIgnoreCase);
+                    var inbox = readMail ? TryFolder(storeObj, olFolderInbox) : null;
                     if (inbox != null) { ReadMail(inbox, storeName, "received", "ReceivedTime", sinceLocal, emails); any = true; }
 
-                    var sent = TryFolder(storeObj, olFolderSentMail);
+                    var sent = readMail ? TryFolder(storeObj, olFolderSentMail) : null;
                     if (sent != null) { ReadMail(sent, storeName, "sent", "SentOn", sinceLocal, emails); any = true; }
 
                     foreach (var (calObj, calName) in CalendarFolders(storeObj, storeName))
