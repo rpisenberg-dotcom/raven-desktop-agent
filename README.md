@@ -14,7 +14,7 @@ Nothing is sent anywhere except your own Clerical Guru app.
 2. Move `RavenAgent.exe` somewhere permanent, e.g. `C:\Users\<you>\RavenAgent\`.
 3. Double-click it. Windows may warn *"Windows protected your PC"* because the app isn't code-signed yet: click **More info → Run anyway**.
 4. The Settings window opens. Fill in:
-   - **Ingest URL** – the address of the `agentIngest` function in Base44 (Dashboard → Code → Functions → agentIngest; it looks like `https://<your-app>.base44.app/api/functions/agentIngest`).
+   - **Ingest URL** – the address of the `agentIngest` function in Base44 (Dashboard → Code → Functions → agentIngest; it looks like `https://<your-app>.base44.app/functions/agentIngest`).
    - **Agent key** – the same value as the `AGENT_INGEST_KEY` secret in Base44.
 5. Click **Test connection**. When it says *Connected*, click **Save**.
 6. Right-click the purple **R** by the clock and tick **Start with Windows**.
