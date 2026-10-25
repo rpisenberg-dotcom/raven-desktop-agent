@@ -17,7 +17,8 @@ sealed class AgentConfig
     public int UploadSeconds { get; set; } = 60;
     public int OutlookMinutes { get; set; } = 5;
     public int FirstRunEmailDays { get; set; } = 2;
-    public int CalendarDaysAhead { get; set; } = 14;
+    public int CalendarDaysAhead { get; set; } = 120; // ~4 months, for planning travel etc.
+    public int CalendarDaysBack { get; set; } = 7;    // so this week's earlier days show in week view
     public int MaxEmailBodyChars { get; set; } = 8000;
     public bool ReadOutlook { get; set; } = true;
     public bool PrivateMode { get; set; }
@@ -59,6 +60,7 @@ sealed class AgentConfig
         AgentConfig cfg;
         try { cfg = File.Exists(FilePath) ? JsonSerializer.Deserialize<AgentConfig>(File.ReadAllText(FilePath), Opts) ?? new() : new(); }
         catch { cfg = new(); }
+        if (cfg.CalendarDaysAhead == 14) cfg.CalendarDaysAhead = 120; // upgrade the old default
         if (string.IsNullOrEmpty(cfg.DeviceId)) cfg.DeviceId = $"{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
         cfg.Save();
         return cfg;

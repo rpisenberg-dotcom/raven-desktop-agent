@@ -3,7 +3,7 @@
 A small Windows tray app that feeds Clerical Guru (Raven 2.0). It runs quietly next to the clock and:
 
 - **Tracks time** – notes which app and window is in front every 5 seconds and groups it into time blocks. Idle time (no keyboard or mouse for 5 minutes, except during meetings), the lock screen, private browser windows and anything on your ignore list are never recorded.
-- **Reads Outlook** – every 5 minutes it reads new mail (Inbox and Sent) and the next 14 days of calendars from **every mailbox loaded in classic Outlook**, including mailboxes on clients' systems. It only reads while Outlook is open and never starts Outlook itself.
+- **Reads Outlook** – every 5 minutes it reads new mail (Inbox and Sent) and calendars from a week back to about four months ahead from **every mailbox loaded in classic Outlook**, including mailboxes on clients' systems. It only reads while Outlook is open and never starts Outlook itself.
 - **Sends it to Clerical Guru** – about once a minute, to the `agentIngest` function. If the internet or Clerical Guru is unavailable, everything waits safely on disk and is sent later.
 
 Nothing is sent anywhere except your own Clerical Guru app.

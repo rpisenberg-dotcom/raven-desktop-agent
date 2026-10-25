@@ -43,7 +43,7 @@ sealed class OutlookReader
             app = Activator.CreateInstance(type)!; // attaches to the running Outlook
             dynamic ns = app.GetNamespace("MAPI");
             var sinceLocal = mailSinceUtc.ToLocalTime();
-            var calStart = DateTime.Today;
+            var calStart = DateTime.Today.AddDays(-_cfg.CalendarDaysBack);
             var calEnd = DateTime.Today.AddDays(_cfg.CalendarDaysAhead + 1);
             int mailboxes = 0;
             var skipped = new List<string>();
@@ -310,7 +310,7 @@ sealed class OutlookReader
             items.Sort("[Start]");
             dynamic found = items.Restrict(OutlookFilters.Overlapping(startLocal, endLocal));
             int n = 0;
-            for (dynamic? a = found.GetFirst(); a != null && n < 1000; a = found.GetNext())
+            for (dynamic? a = found.GetFirst(); a != null && n < 3000; a = found.GetNext())
             {
                 try
                 {
