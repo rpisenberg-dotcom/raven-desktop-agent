@@ -90,7 +90,11 @@ sealed class ScreenContext : IDisposable
         var watch = Stopwatch.StartNew();
         try
         {
-            var root = AutomationElement.FromHandle(hwnd);
+            var window = AutomationElement.FromHandle(hwnd);
+            // Only the page itself: the browser's tab strip, bookmarks bar and address bar list
+            // other tabs' titles, which matched clients that weren't on screen
+            var root = window.FindFirst(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document)) ?? window;
             var walker = TreeWalker.ControlViewWalker;
             var queue = new Queue<AutomationElement>();
             queue.Enqueue(root);
