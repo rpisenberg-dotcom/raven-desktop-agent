@@ -91,7 +91,6 @@ sealed class ActivitySampler
         if (string.IsNullOrEmpty(url) || url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) < 0) return null;
         var m = QboIdInUrl.Match(url);
         return m.Success ? m.Groups[1].Value : null;
-    }        return url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) >= 0 ? _cfg.LastQboCompanyId : null;
     }
 
     void Enqueue(IReadOnlyList<TimeLogRecord> logs)
