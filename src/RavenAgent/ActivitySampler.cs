@@ -79,23 +79,19 @@ sealed class ActivitySampler
     public void Flush() => Enqueue(_builder.Flush(DateTime.UtcNow));
 
     static readonly System.Text.RegularExpressions.Regex QboIdInUrl =
-        new(@"[?&#](?:companyId|realmId|cid)=(\d{6,})", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        new(@"[?&#](?:companyId|realmId)=(\d{6,})", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     /// <summary>
-    /// Which QuickBooks Online company is open. QuickBooks only shows the company id in the address when
-    /// switching companies (e.g. switchCompany?companyId=...), so the last one seen is remembered for every
-    /// QuickBooks page after it, until the next switch.
+    /// The QuickBooks Online company id, only when it's in this page's own address. (An id remembered from an
+    /// earlier page was wrong whenever the company was switched without the address showing it, so the
+    /// company name on screen decides instead.)
     /// </summary>
-    string? QboCompany(string? url)
+    static string? QboCompany(string? url)
     {
-        if (string.IsNullOrEmpty(url) || url.IndexOf("intuit.com", StringComparison.OrdinalIgnoreCase) < 0) return null;
+        if (string.IsNullOrEmpty(url) || url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) < 0) return null;
         var m = QboIdInUrl.Match(url);
-        if (m.Success && m.Groups[1].Value != _cfg.LastQboCompanyId)
-        {
-            _cfg.LastQboCompanyId = m.Groups[1].Value;
-            try { _cfg.Save(); } catch { }
-        }
-        return url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) >= 0 ? _cfg.LastQboCompanyId : null;
+        return m.Success ? m.Groups[1].Value : null;
+    }        return url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) >= 0 ? _cfg.LastQboCompanyId : null;
     }
 
     void Enqueue(IReadOnlyList<TimeLogRecord> logs)
