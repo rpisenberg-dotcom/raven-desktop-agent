@@ -62,6 +62,7 @@ sealed class ActivitySampler
                     var r = _screen.Get(hwnd, process, title, url);
                     if (r != null) { detail = r.Detail; match = r.Match; }
                     source = "screen";
+                    (detail, match) = QuickBooksCompany(hwnd, url, detail, match);
                 }
                 if (match == null)
                 {
@@ -77,6 +78,30 @@ sealed class ActivitySampler
     }
 
     public void Flush() => Enqueue(_builder.Flush(DateTime.UtcNow));
+
+    // QuickBooks Online Accountant: the client's name is in the page header, except on full-screen forms
+    // (bills, checks, invoices...), where names on screen are vendors/customers instead. You stay in one
+    // client's books until you switch, so the last client seen in the header carries over to those forms.
+    static readonly System.Text.RegularExpressions.Regex QboForm = new(
+        @"qbo\.intuit\.com/app/(bill|expense|check|invoice|salesreceipt|journal|estimate|purchaseorder|deposit|transfer|creditmemo|receivepayment|paybills|vendorcredit|refundreceipt|delayedcharge|timeactivity|statement|creditcardcredit|cccredit|inventoryqtyadjustment)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static readonly System.Text.RegularExpressions.Regex QboPractice = new(
+        @"qbo\.intuit\.com/app/(practice|clients|switchcompany|accountant|firm|team|proadvisor)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    ClientMatch? _qboClient;
+    DateTime _qboSeen;
+
+    (string? detail, ClientMatch? match) QuickBooksCompany(IntPtr hwnd, string? url, string? detail, ClientMatch? match)
+    {
+        if (string.IsNullOrEmpty(url) || url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) < 0) return (detail, match);
+        // Your own practice pages (client list, switching): not inside any client's books
+        if (QboPractice.IsMatch(url)) { _qboClient = null; return (null, null); }
+        var fresh = _qboClient != null && DateTime.UtcNow - _qboSeen < TimeSpan.FromHours(2);
+        if (QboForm.IsMatch(url))
+            return fresh ? ($"On screen: {_qboClient!.ClientName}", _qboClient) : (null, null);
+        if (match != null) { _qboClient = match; _qboSeen = DateTime.UtcNow; return (detail, match); }
+        return fresh ? ($"On screen: {_qboClient!.ClientName}", _qboClient) : (detail, match);
+    }
 
     static readonly System.Text.RegularExpressions.Regex QboIdInUrl =
         new(@"[?&#](?:companyId|realmId)=(\d{6,})", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
