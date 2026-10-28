@@ -38,8 +38,9 @@ sealed class ActivitySampler
             }
 
             var (hwnd, process, title) = Native.ForegroundWindow();
-            // Listening in a meeting isn't idle, even without typing
-            var idle = Native.IdleTime() >= TimeSpan.FromMinutes(_cfg.IdleMinutes) && !Classifier.IsMeeting(process, title);
+            // Listening in a meeting or call isn't idle, even without typing (and even with another window in front)
+            var call = CallDetector.ActiveCall();
+            var idle = Native.IdleTime() >= TimeSpan.FromMinutes(_cfg.IdleMinutes) && !Classifier.IsMeeting(process, title) && call == null;
             var ignored = Classifier.IsIgnored(process, title, _cfg.IgnoreApps, _cfg.IgnoreTitleWords);
 
             CurrentWindow = idle ? "Idle" : ignored ? "Private window" : $"{process}: {title}";
@@ -70,7 +71,7 @@ sealed class ActivitySampler
                 if (match != null) CurrentWindow += $" [{match.ClientName}]";
             }
             Enqueue(_builder.Add(new Sample(now, process, title, idle, ignored, url,
-                detail, match?.ClientId, match?.Term, match != null ? source : null, qbo)));
+                detail, match?.ClientId, match?.Term, match != null ? source : null, qbo, call)));
         }
         catch (Exception ex) { Log.Error("Sampling failed", ex); }
     }

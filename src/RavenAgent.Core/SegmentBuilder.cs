@@ -3,7 +3,7 @@ namespace RavenAgent.Core;
 /// <summary>One look at the screen: which window was in front, and whether Raven was active.</summary>
 public readonly record struct Sample(DateTime Utc, string Process, string Title, bool Idle, bool Ignored, string? Url = null,
     string? Detail = null, string? ClientHintId = null, string? ClientHintTerm = null, string? ClientHintSource = null,
-    string? QboCompanyId = null);
+    string? QboCompanyId = null, string? CallApp = null);
 
 /// <summary>
 /// Merges a stream of samples (taken every few seconds) into time segments:
@@ -17,7 +17,7 @@ public sealed class SegmentBuilder
     readonly TimeSpan _minLength;
     readonly TimeSpan _maxLength;
 
-    string? _process, _title, _url, _detail, _hintId, _hintTerm, _hintSource, _qbo;
+    string? _process, _title, _url, _detail, _hintId, _hintTerm, _hintSource, _qbo, _call;
     DateTime _start, _last;
 
     public SegmentBuilder(string deviceId, TimeSpan sampleInterval, TimeSpan? minLength = null, TimeSpan? maxLength = null)
@@ -44,7 +44,8 @@ public sealed class SegmentBuilder
             var clientChanged = s.ClientHintId != null && _hintId != null && s.ClientHintId != _hintId;
             var detailChanged = s.Detail != null && _detail != null && s.Detail != _detail;
             var qboChanged = s.QboCompanyId != _qbo; // switched QuickBooks company = a different client
-            var same = !skip && s.Process == _process && s.Title == _title && gap <= _interval * 3 && !clientChanged && !detailChanged && !qboChanged;
+            var callChanged = s.CallApp != _call;    // joining or leaving a meeting starts a new block
+            var same = !skip && s.Process == _process && s.Title == _title && gap <= _interval * 3 && !clientChanged && !detailChanged && !qboChanged && !callChanged;
             if (same)
             {
                 _last = s.Utc;
@@ -89,6 +90,7 @@ public sealed class SegmentBuilder
         _hintTerm = s.ClientHintTerm;
         _hintSource = s.ClientHintSource;
         _qbo = s.QboCompanyId;
+        _call = s.CallApp;
         _start = s.Utc;
         _last = s.Utc;
     }
@@ -113,12 +115,13 @@ public sealed class SegmentBuilder
                 ClientHintTerm = _hintTerm,
                 ClientHintSource = _hintSource,
                 QboCompanyId = _qbo,
+                InCall = _call,
             });
         }
         _process = null;
         _title = null;
         _url = null;
-        _detail = _hintId = _hintTerm = _hintSource = _qbo = null;
+        _detail = _hintId = _hintTerm = _hintSource = _qbo = _call = null;
     }
 
     static string? Truncate(string? s, int max) => s == null || s.Length <= max ? s : s[..max];

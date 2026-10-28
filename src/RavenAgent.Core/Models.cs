@@ -37,6 +37,8 @@ public sealed record TimeLogRecord
     public string? ClientHintSource { get; init; } // screen | email | title
     /// <summary>QuickBooks Online company open in the browser (its company/realm id), so the app can tell clients apart.</summary>
     public string? QboCompanyId { get; init; }
+    /// <summary>In a call at the time (Teams, Zoom, Browser, Phone Link): the app holding the microphone.</summary>
+    public string? InCall { get; init; }
 }
 
 public sealed record EmailRecord

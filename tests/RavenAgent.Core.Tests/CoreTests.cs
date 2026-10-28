@@ -44,6 +44,18 @@ public class SegmentBuilderTests
     }
 
     [Fact]
+    public void Joining_a_call_starts_a_new_segment_marked_in_call()
+    {
+        var b = new SegmentBuilder("pc", Every);
+        var samples = Enumerable.Range(0, 8).Select(i => new Sample(T0.AddSeconds(i * 5), "EXCEL", "Koplin.xlsx - Excel",
+            false, false, CallApp: i < 4 ? null : "Teams"));
+        var logs = Run(b, samples, 40);
+        Assert.Equal(2, logs.Count);
+        Assert.Null(logs[0].InCall);
+        Assert.Equal("Teams", logs[1].InCall);
+    }
+
+    [Fact]
     public void Switching_windows_closes_the_previous_segment()
     {
         var b = new SegmentBuilder("pc", Every);
