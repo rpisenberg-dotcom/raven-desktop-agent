@@ -44,6 +44,7 @@ sealed class ActivitySampler
 
             CurrentWindow = idle ? "Idle" : ignored ? "Private window" : $"{process}: {title}";
             var url = idle || ignored ? null : BrowserUrl.TryGet(hwnd, process, title);
+            var qbo = QboCompany(url);
 
             // Which client is this about? Selected email in Outlook, names on screen elsewhere, then the title
             string? detail = null, source = null;
@@ -69,12 +70,32 @@ sealed class ActivitySampler
                 if (match != null) CurrentWindow += $" [{match.ClientName}]";
             }
             Enqueue(_builder.Add(new Sample(now, process, title, idle, ignored, url,
-                detail, match?.ClientId, match?.Term, match != null ? source : null)));
+                detail, match?.ClientId, match?.Term, match != null ? source : null, qbo)));
         }
         catch (Exception ex) { Log.Error("Sampling failed", ex); }
     }
 
     public void Flush() => Enqueue(_builder.Flush(DateTime.UtcNow));
+
+    static readonly System.Text.RegularExpressions.Regex QboIdInUrl =
+        new(@"[?&#](?:companyId|realmId|cid)=(\d{6,})", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Which QuickBooks Online company is open. QuickBooks only shows the company id in the address when
+    /// switching companies (e.g. switchCompany?companyId=...), so the last one seen is remembered for every
+    /// QuickBooks page after it, until the next switch.
+    /// </summary>
+    string? QboCompany(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || url.IndexOf("intuit.com", StringComparison.OrdinalIgnoreCase) < 0) return null;
+        var m = QboIdInUrl.Match(url);
+        if (m.Success && m.Groups[1].Value != _cfg.LastQboCompanyId)
+        {
+            _cfg.LastQboCompanyId = m.Groups[1].Value;
+            try { _cfg.Save(); } catch { }
+        }
+        return url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) >= 0 ? _cfg.LastQboCompanyId : null;
+    }
 
     void Enqueue(IReadOnlyList<TimeLogRecord> logs)
     {

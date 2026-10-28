@@ -32,6 +32,18 @@ public class SegmentBuilderTests
     }
 
     [Fact]
+    public void Switching_QuickBooks_company_starts_a_new_segment()
+    {
+        var b = new SegmentBuilder("pc", Every);
+        var samples = Enumerable.Range(0, 8).Select(i => new Sample(T0.AddSeconds(i * 5), "chrome", "QuickBooks - Google Chrome",
+            false, false, "https://qbo.intuit.com/app/homepage", QboCompanyId: i < 4 ? "111111111" : "222222222"));
+        var logs = Run(b, samples, 40);
+        Assert.Equal(2, logs.Count);
+        Assert.Equal("111111111", logs[0].QboCompanyId);
+        Assert.Equal("222222222", logs[1].QboCompanyId);
+    }
+
+    [Fact]
     public void Switching_windows_closes_the_previous_segment()
     {
         var b = new SegmentBuilder("pc", Every);

@@ -35,6 +35,8 @@ public sealed record TimeLogRecord
     public string? ClientHintId { get; init; }
     public string? ClientHintTerm { get; init; }
     public string? ClientHintSource { get; init; } // screen | email | title
+    /// <summary>QuickBooks Online company open in the browser (its company/realm id), so the app can tell clients apart.</summary>
+    public string? QboCompanyId { get; init; }
 }
 
 public sealed record EmailRecord

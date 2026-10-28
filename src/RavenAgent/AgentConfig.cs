@@ -30,6 +30,7 @@ sealed class AgentConfig
     // Sync bookmarks
     public DateTime? LastMailSyncUtc { get; set; }
     public bool OutlookIdsBackfilled { get; set; }
+    public string? LastQboCompanyId { get; set; }
 
     public static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RavenAgent");
     public static string DataFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RavenAgent");
