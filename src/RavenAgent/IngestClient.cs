@@ -59,6 +59,18 @@ sealed class IngestClient : IDisposable
         catch { return null; }
     }
 
+    /// <summary>Contacts Raven assigned to a client or Clerical Guru: the only ones whose texts are read.</summary>
+    public static List<string>? ParseBusinessContacts(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("business_contacts", out var list) || list.ValueKind != JsonValueKind.Array) return null;
+            return list.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!).ToList();
+        }
+        catch { return null; }
+    }
+
     static string Trim(string s) => s.Length > 200 ? s[..200] : s;
 
     public void Dispose() => _http.Dispose();

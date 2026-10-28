@@ -90,6 +90,8 @@ sealed class ScreenContext : IDisposable
                 var contact = SelectedContact(target.Value.hwnd);
                 match = contact != null ? _clients.Matcher.MatchText(contact) : null;
                 detail = contact != null ? $"Phone Link: {contact}" : null;
+                // Texts are only read for contacts Raven assigned to a client or Clerical Guru
+                if (contact != null && _clients.IsBusinessContact(contact)) QueueConversation(target.Value.hwnd, contact);
             }
             else
             {
@@ -112,7 +114,7 @@ sealed class ScreenContext : IDisposable
     }
 
     /// <summary>Names of on-screen elements, top of the window first (company headers come early).</summary>
-    static string ReadText(IntPtr hwnd)
+    static string ReadText(IntPtr hwnd, AutomationElement? rootOverride = null)
     {
         var sb = new System.Text.StringBuilder();
         var watch = Stopwatch.StartNew();
@@ -121,7 +123,7 @@ sealed class ScreenContext : IDisposable
             var window = AutomationElement.FromHandle(hwnd);
             // Only the page itself: the browser's tab strip, bookmarks bar and address bar list
             // other tabs' titles, which matched clients that weren't on screen
-            var root = window.FindFirst(TreeScope.Descendants,
+            var root = rootOverride ?? window.FindFirst(TreeScope.Descendants,
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document)) ?? window;
             var walker = TreeWalker.ControlViewWalker;
             var queue = new Queue<AutomationElement>();
@@ -143,6 +145,59 @@ sealed class ScreenContext : IDisposable
         }
         catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException) { }
         return sb.ToString();
+    }
+
+    readonly List<PhoneSnapshotRecord> _phoneOut = new();
+    readonly Dictionary<string, string> _lastConversation = new();
+
+    /// <summary>Text conversations waiting to be sent (taken by the upload).</summary>
+    public List<PhoneSnapshotRecord> TakePhoneSnapshots() { lock (_phoneOut) { var l = _phoneOut.ToList(); _phoneOut.Clear(); return l; } }
+    public void ReturnPhoneSnapshots(List<PhoneSnapshotRecord> l) { lock (_phoneOut) _phoneOut.InsertRange(0, l); }
+
+    void QueueConversation(IntPtr hwnd, string contact)
+    {
+        var text = ConversationText(hwnd);
+        if (string.IsNullOrWhiteSpace(text)) return;
+        lock (_phoneOut)
+        {
+            if (_lastConversation.TryGetValue(contact, out var prev) && prev == text) return;
+            _lastConversation[contact] = text;
+            _phoneOut.RemoveAll(x => x.Contact == contact); // only the latest view of a conversation is needed
+            _phoneOut.Add(new PhoneSnapshotRecord { Contact = contact, Text = text, CapturedAt = Json.Iso(DateTime.UtcNow) });
+        }
+    }
+
+    /// <summary>
+    /// The messages visible in the open Phone Link conversation (the newest ~40 lines), leaving out the
+    /// list of other conversations and the app's own buttons.
+    /// </summary>
+    static string? ConversationText(IntPtr hwnd)
+    {
+        try
+        {
+            var window = AutomationElement.FromHandle(hwnd);
+            var skip = new HashSet<string>(NavWords, StringComparer.OrdinalIgnoreCase);
+            // Everything in the conversations list (other people's names and previews) is left out
+            var selected = window.FindFirst(TreeScope.Descendants, new AndCondition(
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem),
+                new PropertyCondition(SelectionItemPattern.IsSelectedProperty, true)));
+            var list = selected != null ? TreeWalker.ControlViewWalker.GetParent(selected) : null;
+            if (list != null)
+                for (var c = TreeWalker.ControlViewWalker.GetFirstChild(list); c != null; c = TreeWalker.ControlViewWalker.GetNextSibling(c))
+                    try { skip.Add((c.Current.Name ?? "").Trim()); } catch (ElementNotAvailableException) { }
+            var lines = new List<string>();
+            foreach (var line in ReadText(hwnd, window).Split('\n'))
+            {
+                var t = line.Trim();
+                if (t.Length < 2 || skip.Contains(t) || (lines.Count > 0 && lines[^1] == t)) continue;
+                lines.Add(t);
+            }
+            var tail = lines.Count > 40 ? lines.GetRange(lines.Count - 40, 40) : lines;
+            var text = string.Join("\n", tail);
+            return text.Length > 4000 ? text[^4000..] : text;
+        }
+        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException) { }
+        return null;
     }
 
     /// <summary>Contact of the conversation or call open in Phone Link (the selected list item), or null.</summary>

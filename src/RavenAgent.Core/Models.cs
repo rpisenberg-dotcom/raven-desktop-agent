@@ -96,6 +96,15 @@ public sealed record IngestPayload
     public List<string>? Mailboxes { get; init; }
     /// <summary>Outlook ids for emails the app already has (sent once, so older emails can be opened in Outlook).</summary>
     public List<EmailIdRecord>? EmailIds { get; init; }
+    /// <summary>Text conversations open in Phone Link, for business contacts only (never personal or unknown ones).</summary>
+    public List<PhoneSnapshotRecord>? PhoneMessages { get; init; }
+}
+
+public sealed record PhoneSnapshotRecord
+{
+    public required string Contact { get; init; }
+    public required string Text { get; init; }
+    public required string CapturedAt { get; init; }
 }
 
 public sealed record EmailIdRecord

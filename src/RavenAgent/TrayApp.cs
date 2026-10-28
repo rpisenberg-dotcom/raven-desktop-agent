@@ -159,6 +159,7 @@ sealed class TrayApp : ApplicationContext
     {
         if (_uploading || !_cfg.IsConfigured) return;
         _uploading = true;
+        List<PhoneSnapshotRecord> texts = new();
         try
         {
             var (logs, emails) = _queue.Peek(400);
@@ -167,7 +168,8 @@ sealed class TrayApp : ApplicationContext
             // Nothing new: skip the call (each one costs Base44 credits), but check in every 30 minutes
             // so client and mailbox settings still reach this PC
             var ids = _idBackfill.Take(300).ToList();
-            if (logs.Count == 0 && emails.Count == 0 && cal == null && ids.Count == 0
+            texts = _screen.TakePhoneSnapshots();
+            if (logs.Count == 0 && emails.Count == 0 && cal == null && ids.Count == 0 && texts.Count == 0
                 && _lastUploadOk is { } last && DateTime.Now - last < TimeSpan.FromMinutes(30)) return;
 
             var payload = new IngestPayload
@@ -181,12 +183,15 @@ sealed class TrayApp : ApplicationContext
                 CalendarSyncs = cal?.Syncs ?? new(),
                 Mailboxes = _mailboxes,
                 EmailIds = ids.Count > 0 ? ids : null,
+                PhoneMessages = texts.Count > 0 ? texts : null,
             };
             var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, payload);
             if (res.Ok)
             {
                 var directory = IngestClient.ParseClientDirectory(res.Message);
                 if (directory != null) _clients.Update(directory);
+                var business = IngestClient.ParseBusinessContacts(res.Message);
+                if (business != null) _clients.UpdateBusinessContacts(business);
                 var ignored = IngestClient.ParseIgnoredMailboxes(res.Message);
                 if (ignored != null && !ignored.SequenceEqual(_cfg.IgnoredMailboxes))
                 {
@@ -203,11 +208,12 @@ sealed class TrayApp : ApplicationContext
             }
             else
             {
+                _screen.ReturnPhoneSnapshots(texts);
                 if (res.Message != _lastError) Log.Error($"Upload failed: {res.Message}");
                 _lastError = res.Message;
             }
         }
-        catch (Exception ex) { _lastError = ex.Message; Log.Error("Upload failed", ex); }
+        catch (Exception ex) { _screen.ReturnPhoneSnapshots(texts); _lastError = ex.Message; Log.Error("Upload failed", ex); }
         finally { _uploading = false; RefreshStatus(); }
     }
 
