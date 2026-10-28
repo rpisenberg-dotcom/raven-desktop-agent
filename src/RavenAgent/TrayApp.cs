@@ -229,11 +229,21 @@ sealed class TrayApp : ApplicationContext
     void ShowSettings()
     {
         if (_settings != null) { _settings.Activate(); return; }
+        var oldUrl = _cfg.IngestUrl;
         using (_settings = new SettingsForm(_cfg))
         {
             if (_settings.ShowDialog() == DialogResult.OK)
             {
                 Log.Info("Settings saved");
+                if (!string.Equals(oldUrl, _cfg.IngestUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Connected to a different Raven app: send it the full calendar, mailbox list and Outlook ids
+                    Log.Info($"Now sending to {_cfg.IngestUrl}");
+                    _lastCalSig = "";
+                    _lastUploadOk = null;
+                    _cfg.OutlookIdsBackfilled = false;
+                    _cfg.Save();
+                }
                 _ = UploadAsync();
                 _ = ReadOutlookAsync();
             }
