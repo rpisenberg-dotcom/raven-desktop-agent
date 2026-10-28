@@ -27,6 +27,7 @@ sealed class ScreenContext : IDisposable
     { "messages", "calls", "photos", "apps", "notifications", "settings", "contacts", "chats", "all", "unread", "home", "new chat", "chat" };
 
     const int MaxElements = 4000;
+    const int HeaderLines = 100; // QuickBooks: the page header comes first in the reading order
     static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(1500);
     static readonly TimeSpan Refresh = TimeSpan.FromSeconds(30); // pages change without a title change (QBO client switch, chat replies)
 
@@ -36,7 +37,7 @@ sealed class ScreenContext : IDisposable
     readonly object _lock = new();
     volatile bool _stop;
 
-    (IntPtr hwnd, string key, string process)? _target;
+    (IntPtr hwnd, string key, string process, string? url)? _target;
     string? _resultKey;
     Result? _result;
 
@@ -58,7 +59,7 @@ sealed class ScreenContext : IDisposable
         lock (_lock)
         {
             var changed = _target?.key != key;
-            _target = (hwnd, key, Classifier.Normalize(process));
+            _target = (hwnd, key, Classifier.Normalize(process), url);
             // Phone Link switches conversations without changing its title, so check it more often
             var refresh = PhoneApps.Contains(Classifier.Normalize(process)) ? TimeSpan.FromSeconds(5) : Refresh;
             var stale = _result == null || DateTime.UtcNow - _result.ReadAt > refresh;
@@ -73,7 +74,7 @@ sealed class ScreenContext : IDisposable
         {
             _wake.WaitOne(TimeSpan.FromSeconds(5));
             if (_stop) break;
-            (IntPtr hwnd, string key, string process)? target;
+            (IntPtr hwnd, string key, string process, string? url)? target;
             lock (_lock) target = _target;
             if (target == null) continue;
             var isPhone = PhoneApps.Contains(target.Value.process);
@@ -96,6 +97,10 @@ sealed class ScreenContext : IDisposable
             else
             {
                 var text = ReadText(target.Value.hwnd);
+                // QuickBooks: only the top of the page (the company name in the header) says whose books these are.
+                // Names further down are payees and customers ("Amazon Prime" in a bank feed), so they never count.
+                if (target.Value.url?.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) >= 0)
+                    text = string.Join("\n", text.Split('\n').Where(l => l.Trim().Length > 0).Take(HeaderLines));
                 match = _clients.Matcher.MatchText(text, requireClearWinner: true);
                 detail = match != null ? $"On screen: {match.ClientName}" : null;
                 // Claude / Copilot: label the time with the chat's title so it can be assigned later
