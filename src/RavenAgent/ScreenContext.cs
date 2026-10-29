@@ -49,7 +49,13 @@ sealed class ScreenContext : IDisposable
         _thread.Start();
     }
 
-    public static bool Handles(string process) => Apps.Contains(Classifier.Normalize(process));
+    // Copilot and Claude ship under several process names (copilotapp, m365copilot, claude...), so match by name
+    static bool IsAi(string normalized) => AiApps.Contains(normalized) || normalized.Contains("copilot") || normalized.Contains("claude");
+    public static bool Handles(string process)
+    {
+        var n = Classifier.Normalize(process);
+        return Apps.Contains(n) || IsAi(n);
+    }
 
     /// <summary>Latest result for this window/page, if one has been read. Also asks the worker to (re)read it.</summary>
     public Result? Get(IntPtr hwnd, string process, string title, string? url)
@@ -104,7 +110,7 @@ sealed class ScreenContext : IDisposable
                 match = _clients.Matcher.MatchText(text, requireClearWinner: true);
                 detail = match != null ? $"On screen: {match.ClientName}" : null;
                 // Claude / Copilot: label the time with the chat's title so it can be assigned later
-                if (AiApps.Contains(target.Value.process))
+                if (IsAi(target.Value.process))
                 {
                     var chat = ChatTitle(target.Value.hwnd);
                     if (chat != null) detail = $"Chat: {chat}";
