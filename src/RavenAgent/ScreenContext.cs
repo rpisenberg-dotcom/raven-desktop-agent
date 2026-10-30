@@ -102,7 +102,10 @@ sealed class ScreenContext : IDisposable
             }
             else
             {
-                var text = ReadText(target.Value.hwnd);
+                AutomationElement? chatRoot = null;
+                if (IsAi(target.Value.process))
+                    try { chatRoot = ChatArea(AutomationElement.FromHandle(target.Value.hwnd)); } catch { }
+                var text = ReadText(target.Value.hwnd, chatRoot);
                 // QuickBooks: only the top of the page (the company name in the header) says whose books these are.
                 // Names further down are payees and customers ("Amazon Prime" in a bank feed), so they never count.
                 if (target.Value.url?.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -134,8 +137,7 @@ sealed class ScreenContext : IDisposable
             var window = AutomationElement.FromHandle(hwnd);
             // Only the page itself: the browser's tab strip, bookmarks bar and address bar list
             // other tabs' titles, which matched clients that weren't on screen
-            var root = rootOverride ?? window.FindFirst(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document)) ?? window;
+            var root = rootOverride ?? MainDocument(window) ?? window;
             var walker = TreeWalker.ControlViewWalker;
             var queue = new Queue<AutomationElement>();
             queue.Enqueue(root);
@@ -378,8 +380,7 @@ sealed class ScreenContext : IDisposable
         try
         {
             var window = AutomationElement.FromHandle(hwnd);
-            var doc = window.FindFirst(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
+            var doc = MainDocument(window);
             var name = (doc?.Current.Name ?? "").Trim();
             foreach (var suffix in new[] { " - Claude", " | Microsoft Copilot", " - Microsoft Copilot", " - Copilot", " | Copilot" })
                 if (name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) name = name[..^suffix.Length].Trim();
@@ -389,6 +390,47 @@ sealed class ScreenContext : IDisposable
         }
         catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException) { }
         return null;
+    }
+
+    /// <summary>
+    /// The page inside a browser or app window. Apps like Claude contain more than one (an empty one first),
+    /// so take the one with a title, else the one with the most content.
+    /// </summary>
+    static AutomationElement? MainDocument(AutomationElement window)
+    {
+        var docs = window.FindAll(TreeScope.Descendants,
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
+        AutomationElement? best = null;
+        int bestScore = -1;
+        foreach (AutomationElement d in docs)
+        {
+            try
+            {
+                var named = !string.IsNullOrWhiteSpace(d.Current.Name);
+                var children = 0;
+                for (var c = TreeWalker.ControlViewWalker.GetFirstChild(d); c != null && children < 50; c = TreeWalker.ControlViewWalker.GetNextSibling(c)) children++;
+                var score = (named ? 1000 : 0) + children;
+                if (score > bestScore) { best = d; bestScore = score; }
+            }
+            catch (ElementNotAvailableException) { }
+        }
+        return best;
+    }
+
+    /// <summary>Claude / Copilot: just the conversation ("Chat messages"), not the sidebar list of other chats.</summary>
+    static AutomationElement? ChatArea(AutomationElement window)
+    {
+        var doc = MainDocument(window) ?? window;
+        foreach (var name in new[] { "Chat messages", "Conversation", "Messages", "Primary pane" })
+        {
+            try
+            {
+                var el = doc.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, name));
+                if (el != null) return el;
+            }
+            catch (ElementNotAvailableException) { }
+        }
+        return doc;
     }
 
     public void Dispose()
