@@ -223,7 +223,12 @@ sealed class ScreenContext : IDisposable
         try
         {
             var window = AutomationElement.FromHandle(hwnd);
+            // 0) The open conversation's header: top of the right-hand pane, the name above the phone number
+            //    ("Jonathan Egan" / "+1 312-483-4178"). The tabs (Messages, Calls...) and the list are further left.
+            var header = HeaderContact(window);
+            if (header != null) { found = header; how = "conversation header"; }
             // 1) The selected conversation or call in Phone Link's list (any kind of list item)
+            if (found == null)
             foreach (AutomationElement el in window.FindAll(TreeScope.Descendants,
                          new PropertyCondition(SelectionItemPattern.IsSelectedProperty, true)))
             {
@@ -269,6 +274,43 @@ sealed class ScreenContext : IDisposable
         var line = found != null ? $"Phone Link contact: {found} (from {how})" : "Phone Link: couldn't find the contact on screen";
         if (line != _lastPhoneLog) { _lastPhoneLog = line; Log.Info(line); }
         return found;
+    }
+
+    static readonly System.Text.RegularExpressions.Regex PhoneNumber = new(@"^\+?[\d\s().\-]{7,}$");
+
+    /// <summary>
+    /// Phone Link's conversation header: text in the top band of the window, right of the conversation list.
+    /// The first line that isn't a phone number is the contact; for unsaved numbers the number itself is used.
+    /// </summary>
+    static string? HeaderContact(AutomationElement window)
+    {
+        var w = window.Current.BoundingRectangle;
+        if (w.IsEmpty || w.Width < 300) return null;
+        var texts = window.FindAll(TreeScope.Descendants,
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text));
+        var inHeader = new List<(double top, double left, string name)>();
+        foreach (AutomationElement el in texts)
+        {
+            try
+            {
+                var r = el.Current.BoundingRectangle;
+                var name = (el.Current.Name ?? "").Trim();
+                if (r.IsEmpty || name.Length == 0) continue;
+                var right = r.Left > w.Left + w.Width * 0.45;   // the conversation pane, not the list or notifications
+                var top = r.Top < w.Top + Math.Max(220, w.Height * 0.2); // header band under the title bar and tabs
+                if (right && top) inHeader.Add((r.Top, r.Left, name));
+            }
+            catch (ElementNotAvailableException) { }
+        }
+        inHeader.Sort((a, b) => a.top != b.top ? a.top.CompareTo(b.top) : a.left.CompareTo(b.left));
+        string? number = null;
+        foreach (var (_, _, name) in inHeader)
+        {
+            if (PhoneNumber.IsMatch(name)) { number ??= name; continue; }
+            var c = ContactFrom(name);
+            if (c != null && !c.Equals("Phone Link", StringComparison.OrdinalIgnoreCase)) return c;
+        }
+        return number;
     }
 
     /// <summary>"Jane Smith, Can you send..., 10:42 AM" -> "Jane Smith"; null for empty / button-like names.</summary>
