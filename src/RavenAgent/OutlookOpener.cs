@@ -51,6 +51,7 @@ static class OutlookOpener
                 return;
             }
             item.Display();
+            BringToFront((object)item);
         }
         catch (Exception ex)
         {
@@ -131,5 +132,44 @@ static class OutlookOpener
         }
         catch { /* no subfolders */ }
         return null;
+    }
+
+    // Windows doesn't let a program in the background jump in front of the window being used, so the opened
+    // email used to appear behind Chrome. Activate Outlook's window for it and bring it forward.
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern IntPtr FindWindow(string? cls, string? title);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(int pid);
+
+    static void BringToFront(object itemObj)
+    {
+        try
+        {
+            dynamic item = itemObj;
+            dynamic insp = item.GetInspector;
+            try { if ((int)insp.WindowState == 1) insp.WindowState = 2; } catch { } // minimized -> normal
+            insp.Activate();
+            string caption = (string)insp.Caption;
+            AllowSetForegroundWindow(-1);
+            for (int i = 0; i < 10; i++)
+            {
+                var h = FindWindow("rctrl_renwnd32", caption);
+                if (h != IntPtr.Zero)
+                {
+                    // A tap of the Alt key lets this program hand the focus to Outlook's window
+                    keybd_event(0x12, 0, 0, UIntPtr.Zero);
+                    keybd_event(0x12, 0, 2, UIntPtr.Zero);
+                    ShowWindow(h, 9); // restore
+                    BringWindowToTop(h);
+                    SetForegroundWindow(h);
+                    return;
+                }
+                Thread.Sleep(150);
+            }
+        }
+        catch (Exception ex) { Log.Error("Couldn't bring the email to the front", ex); }
     }
 }
