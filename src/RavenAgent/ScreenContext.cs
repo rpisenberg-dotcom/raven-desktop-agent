@@ -186,23 +186,30 @@ sealed class ScreenContext : IDisposable
     {
         try
         {
+            // Only the open conversation (the right-hand pane under its header); the conversation list and the
+            // Notifications panel on the left show other people's messages and are left out
             var window = AutomationElement.FromHandle(hwnd);
-            var skip = new HashSet<string>(NavWords, StringComparer.OrdinalIgnoreCase);
-            // Everything in the conversations list (other people's names and previews) is left out
-            var selected = window.FindFirst(TreeScope.Descendants, new AndCondition(
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem),
-                new PropertyCondition(SelectionItemPattern.IsSelectedProperty, true)));
-            var list = selected != null ? TreeWalker.ControlViewWalker.GetParent(selected) : null;
-            if (list != null)
-                for (var c = TreeWalker.ControlViewWalker.GetFirstChild(list); c != null; c = TreeWalker.ControlViewWalker.GetNextSibling(c))
-                    try { skip.Add((c.Current.Name ?? "").Trim()); } catch (ElementNotAvailableException) { }
-            var lines = new List<string>();
-            foreach (var line in ReadText(hwnd, window).Split('\n'))
+            var w = window.Current.BoundingRectangle;
+            if (w.IsEmpty) return null;
+            var items = new List<(double top, double left, string text)>();
+            foreach (AutomationElement el in window.FindAll(TreeScope.Descendants,
+                         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text)))
             {
-                var t = line.Trim();
-                if (t.Length < 2 || skip.Contains(t) || (lines.Count > 0 && lines[^1] == t)) continue;
-                lines.Add(t);
+                try
+                {
+                    var r = el.Current.BoundingRectangle;
+                    var t = (el.Current.Name ?? "").Trim();
+                    if (r.IsEmpty || t.Length < 2 || NavWords.Contains(t)) continue;
+                    if (r.Left <= w.Left + w.Width * 0.45) continue;                      // list / notifications
+                    if (r.Top < w.Top + Math.Max(220, w.Height * 0.2)) continue;          // header (name, number)
+                    if (t.StartsWith("Send a message", StringComparison.OrdinalIgnoreCase)) continue; // the reply box
+                    items.Add((r.Top, r.Left, t));
+                }
+                catch (ElementNotAvailableException) { }
             }
+            items.Sort((a, b) => a.top != b.top ? a.top.CompareTo(b.top) : a.left.CompareTo(b.left));
+            var lines = new List<string>();
+            foreach (var (_, _, t) in items) if (lines.Count == 0 || lines[^1] != t) lines.Add(t);
             var tail = lines.Count > 40 ? lines.GetRange(lines.Count - 40, 40) : lines;
             var text = string.Join("\n", tail);
             return text.Length > 4000 ? text[^4000..] : text;
@@ -211,7 +218,6 @@ sealed class ScreenContext : IDisposable
         return null;
     }
 
-    /// <summary>Contact of the conversation or call open in Phone Link (the selected list item), or null.</summary>
     static readonly System.Text.RegularExpressions.Regex ContactIds = new(
         "contact|conversation|thread|header|title|displayname|recipient|caller|participant",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
