@@ -31,6 +31,10 @@ sealed class AgentConfig
     public DateTime? LastMailSyncUtc { get; set; }
     public bool OutlookIdsBackfilled { get; set; }
     public string? LastQboCompanyId { get; set; }
+    // Last client seen in the QuickBooks header (kept across restarts, used on full-screen forms)
+    public string? LastQboClientId { get; set; }
+    public string? LastQboClientName { get; set; }
+    public DateTime? LastQboSeenUtc { get; set; }
 
     public static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RavenAgent");
     public static string DataFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RavenAgent");

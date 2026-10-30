@@ -90,16 +90,42 @@ sealed class ActivitySampler
         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     ClientMatch? _qboClient;
     DateTime _qboSeen;
+    bool _qboLoaded;
+
+    void RememberQbo(ClientMatch? m)
+    {
+        _qboClient = m;
+        _qboSeen = DateTime.UtcNow;
+        _cfg.LastQboClientId = m?.ClientId;
+        _cfg.LastQboClientName = m?.ClientName;
+        _cfg.LastQboSeenUtc = m != null ? _qboSeen : null;
+        try { _cfg.Save(); } catch { }
+    }
 
     (string? detail, ClientMatch? match) QuickBooksCompany(IntPtr hwnd, string? url, string? detail, ClientMatch? match)
     {
         if (string.IsNullOrEmpty(url) || url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) < 0) return (detail, match);
+        if (!_qboLoaded)
+        {
+            // pick up where the agent left off (it restarts for updates and after reboots)
+            _qboLoaded = true;
+            if (_cfg.LastQboClientId != null && _cfg.LastQboSeenUtc is { } seen)
+            {
+                _qboClient = new ClientMatch(_cfg.LastQboClientId, _cfg.LastQboClientName ?? "", _cfg.LastQboClientName ?? "", 1);
+                _qboSeen = seen;
+            }
+        }
         // Your own practice pages (client list, switching): not inside any client's books
-        if (QboPractice.IsMatch(url)) { _qboClient = null; return (null, null); }
+        if (QboPractice.IsMatch(url)) { if (_qboClient != null) RememberQbo(null); return (null, null); }
         var fresh = _qboClient != null && DateTime.UtcNow - _qboSeen < TimeSpan.FromHours(2);
         if (QboForm.IsMatch(url))
             return fresh ? ($"On screen: {_qboClient!.ClientName}", _qboClient) : (null, null);
-        if (match != null) { _qboClient = match; _qboSeen = DateTime.UtcNow; return (detail, match); }
+        if (match != null)
+        {
+            if (_qboClient?.ClientId != match.ClientId || DateTime.UtcNow - _qboSeen > TimeSpan.FromMinutes(5)) RememberQbo(match);
+            else _qboSeen = DateTime.UtcNow;
+            return (detail, match);
+        }
         return fresh ? ($"On screen: {_qboClient!.ClientName}", _qboClient) : (detail, match);
     }
 
