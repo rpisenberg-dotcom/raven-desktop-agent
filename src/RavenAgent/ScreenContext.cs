@@ -212,25 +212,114 @@ sealed class ScreenContext : IDisposable
     }
 
     /// <summary>Contact of the conversation or call open in Phone Link (the selected list item), or null.</summary>
+    static readonly System.Text.RegularExpressions.Regex ContactIds = new(
+        "contact|conversation|thread|header|title|displayname|recipient|caller|participant",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static string? _lastPhoneLog;
+
     static string? SelectedContact(IntPtr hwnd)
     {
+        string? found = null, how = null;
         try
         {
             var window = AutomationElement.FromHandle(hwnd);
-            var selected = window.FindAll(TreeScope.Descendants, new AndCondition(
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem),
-                new PropertyCondition(SelectionItemPattern.IsSelectedProperty, true)));
-            foreach (AutomationElement el in selected)
+            // 1) The selected conversation or call in Phone Link's list (any kind of list item)
+            foreach (AutomationElement el in window.FindAll(TreeScope.Descendants,
+                         new PropertyCondition(SelectionItemPattern.IsSelectedProperty, true)))
             {
-                var name = (el.Current.Name ?? "").Trim();
-                if (name.Length == 0 || NavWords.Contains(name)) continue;
-                // "Jane Smith, Can you send..., 10:42 AM" -> "Jane Smith"
-                var first = name.Split(new[] { '\n', ',', ';' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-                if (first.Length > 0 && first.Length <= 80 && !NavWords.Contains(first)) return first;
+                var c = ContactFrom(el.Current.Name);
+                if (c != null) { found = c; how = "selected item"; break; }
+            }
+            // 2) The conversation / call header (an element named like "ContactName" or "ConversationHeader")
+            if (found == null)
+            {
+                var walker = TreeWalker.ControlViewWalker;
+                var queue = new Queue<AutomationElement>();
+                queue.Enqueue(window);
+                int seen = 0;
+                var watch = Stopwatch.StartNew();
+                while (queue.Count > 0 && seen < 3000 && watch.Elapsed < Budget)
+                {
+                    var el = queue.Dequeue();
+                    seen++;
+                    try
+                    {
+                        var id = el.Current.AutomationId ?? "";
+                        if (id.Length > 0 && ContactIds.IsMatch(id))
+                        {
+                            var c = ContactFrom(el.Current.Name);
+                            if (c != null) { found = c; how = $"element {id}"; break; }
+                        }
+                        for (var child = walker.GetFirstChild(el); child != null; child = walker.GetNextSibling(child)) queue.Enqueue(child);
+                    }
+                    catch (ElementNotAvailableException) { }
+                }
+            }
+            // 3) A separate call window titled with the caller ("Call with Jane Smith")
+            if (found == null)
+            {
+                var title = (window.Current.Name ?? "").Trim();
+                var c = title.Equals("Phone Link", StringComparison.OrdinalIgnoreCase) ? null
+                    : ContactFrom(System.Text.RegularExpressions.Regex.Replace(title, @"^(call with|calling|in call with|on call with)\s+|\s*[-|]\s*phone link$", "",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+                if (c != null) { found = c; how = "window title"; }
             }
         }
         catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException) { }
-        return null;
+        var line = found != null ? $"Phone Link contact: {found} (from {how})" : "Phone Link: couldn't find the contact on screen";
+        if (line != _lastPhoneLog) { _lastPhoneLog = line; Log.Info(line); }
+        return found;
+    }
+
+    /// <summary>"Jane Smith, Can you send..., 10:42 AM" -> "Jane Smith"; null for empty / button-like names.</summary>
+    static string? ContactFrom(string? name)
+    {
+        name = (name ?? "").Trim();
+        if (name.Length == 0 || NavWords.Contains(name)) return null;
+        var first = name.Split(new[] { '\n', ',', ';' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+        foreach (var prefix in new[] { "Conversation with ", "Message from ", "Messages with ", "Call with ", "Chat with " })
+            if (first.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) first = first[prefix.Length..].Trim();
+        if (first.Length < 2 || first.Length > 80 || NavWords.Contains(first)) return null;
+        return first;
+    }
+
+    /// <summary>
+    /// Writes the layout of a window (element types, ids and short names) to a file, so support can see how an
+    /// app shows its information. Only made when Raven asks for it from the tray menu.
+    /// </summary>
+    public static string DumpLayout(IntPtr hwnd, string process, string folder)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Window layout for {process} at {DateTime.Now:g}");
+        try
+        {
+            var walker = TreeWalker.ControlViewWalker;
+            void Walk(AutomationElement el, int depth, ref int count)
+            {
+                if (depth > 25 || count > 2500) return;
+                count++;
+                try
+                {
+                    var c = el.Current;
+                    var name = (c.Name ?? "").Replace("\n", " ");
+                    if (name.Length > 80) name = name[..80] + "…";
+                    bool sel = false;
+                    try { sel = (bool)el.GetCurrentPropertyValue(SelectionItemPattern.IsSelectedProperty); } catch { }
+                    sb.Append(' ', depth * 2).Append(c.ControlType.ProgrammaticName.Replace("ControlType.", ""))
+                      .Append(c.AutomationId is { Length: > 0 } id ? $" #{id}" : "")
+                      .Append(name.Length > 0 ? $" \"{name}\"" : "").Append(sel ? " [selected]" : "").AppendLine();
+                    for (var child = walker.GetFirstChild(el); child != null; child = walker.GetNextSibling(child)) Walk(child, depth + 1, ref count);
+                }
+                catch (ElementNotAvailableException) { }
+            }
+            int n = 0;
+            Walk(AutomationElement.FromHandle(hwnd), 0, ref n);
+        }
+        catch (Exception ex) { sb.AppendLine($"Stopped: {ex.Message}"); }
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, $"layout-{process}-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+        File.WriteAllText(path, sb.ToString());
+        return path;
     }
 
     /// <summary>The open chat's title in Claude / Copilot (the web page's title inside the app), or null.</summary>

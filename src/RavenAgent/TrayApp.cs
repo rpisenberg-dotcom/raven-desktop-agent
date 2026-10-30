@@ -62,6 +62,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add("Sync now", null, async (_, _) => { await ReadOutlookAsync(); await UploadAsync(); });
         menu.Items.Add("Settings...", null, (_, _) => ShowSettings());
         menu.Items.Add("Open log folder", null, (_, _) => OpenFolder(Log.Folder));
+        menu.Items.Add("Capture an app's layout for support (in 5 seconds)", null, (_, _) => CaptureLayoutSoon());
         menu.Items.Add(_startupItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Shutdown());
@@ -256,6 +257,23 @@ sealed class TrayApp : ApplicationContext
         }
         _settings = null;
         RefreshStatus();
+    }
+
+    /// <summary>Gives Raven 5 seconds to click into the app, then saves that window's layout for support.</summary>
+    void CaptureLayoutSoon()
+    {
+        _tray.ShowBalloonTip(4000, "Raven", "Click into the app you want Raven to read (e.g. Phone Link with a conversation open). Capturing in 5 seconds...", ToolTipIcon.Info);
+        var t = new System.Windows.Forms.Timer { Interval = 5000 };
+        t.Tick += (_, _) =>
+        {
+            t.Stop(); t.Dispose();
+            var (hwnd, process, _) = Native.ForegroundWindow();
+            var path = ScreenContext.DumpLayout(hwnd, string.IsNullOrEmpty(process) ? "app" : process, Log.Folder);
+            Log.Info($"Saved window layout to {path}");
+            _tray.ShowBalloonTip(5000, "Raven", "Layout saved. The folder is opening: send the newest 'layout' file to Claude.", ToolTipIcon.Info);
+            OpenFolder(Log.Folder);
+        };
+        t.Start();
     }
 
     static void OpenFolder(string path)
