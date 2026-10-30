@@ -324,9 +324,11 @@ sealed class ScreenContext : IDisposable
     {
         name = (name ?? "").Trim();
         if (name.Length == 0 || NavWords.Contains(name)) return null;
-        var first = name.Split(new[] { '\n', ',', ';' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
         foreach (var prefix in new[] { "Conversation with ", "Message from ", "Messages with ", "Call with ", "Chat with " })
-            if (first.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) first = first[prefix.Length..].Trim();
+            if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) name = name[prefix.Length..].Trim();
+        // "Jonathan Egan. Message preview. Hi Raven" -> "Jonathan Egan"
+        var first = System.Text.RegularExpressions.Regex.Split(name, @"\r?\n|,|;|\.\s|\s+message preview",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase)[0].Trim().TrimEnd('.');
         if (first.Length < 2 || first.Length > 80 || NavWords.Contains(first)) return null;
         return first;
     }
