@@ -34,6 +34,10 @@ sealed class TrayApp : ApplicationContext
     string _lastCalSig = "";
     List<string>? _mailboxes;
     readonly List<EmailIdRecord> _idBackfill = new();
+    readonly List<NoticeAck> _acks = new();
+    readonly HashSet<string> _noticesShown = new();
+    readonly Queue<RavenNotice> _noticeQueue = new();
+    NoticeWindow? _notice;
     DateTime _lastCalQueued = DateTime.MinValue;
     string _lastError = "";
 
@@ -170,7 +174,8 @@ sealed class TrayApp : ApplicationContext
             // so client and mailbox settings still reach this PC
             var ids = _idBackfill.Take(300).ToList();
             texts = _screen.TakePhoneSnapshots();
-            if (logs.Count == 0 && emails.Count == 0 && cal == null && ids.Count == 0 && texts.Count == 0
+            var acks = _acks.ToList();
+            if (logs.Count == 0 && emails.Count == 0 && cal == null && ids.Count == 0 && texts.Count == 0 && acks.Count == 0
                 && _lastUploadOk is { } last && DateTime.Now - last < TimeSpan.FromMinutes(30)) return;
 
             var payload = new IngestPayload
@@ -185,6 +190,7 @@ sealed class TrayApp : ApplicationContext
                 Mailboxes = _mailboxes,
                 EmailIds = ids.Count > 0 ? ids : null,
                 PhoneMessages = texts.Count > 0 ? texts : null,
+                NoticeAcks = acks.Count > 0 ? acks : null,
             };
             var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, payload);
             if (res.Ok)
@@ -201,6 +207,10 @@ sealed class TrayApp : ApplicationContext
                     Log.Info($"Not reading mail from: {string.Join(", ", ignored)}");
                 }
                 _queue.Remove(logs, emails);
+                _acks.RemoveAll(a => acks.Contains(a));
+                foreach (var n in IngestClient.ParseNotices(res.Message))
+                    if (_noticesShown.Add(n.TaskId + n.Kind)) _noticeQueue.Enqueue(n);
+                ShowNextNotice();
                 _idBackfill.RemoveRange(0, Math.Min(ids.Count, _idBackfill.Count));
                 lock (_calLock) if (ReferenceEquals(_pendingCalendar, cal)) _pendingCalendar = null;
                 _lastUploadOk = DateTime.Now;
@@ -257,6 +267,23 @@ sealed class TrayApp : ApplicationContext
         }
         _settings = null;
         RefreshStatus();
+    }
+
+    /// <summary>One pop-up at a time, and never while Raven is in a call (she may be sharing her screen).</summary>
+    void ShowNextNotice()
+    {
+        if (_notice != null || _noticeQueue.Count == 0 || _cfg.PrivateMode) return;
+        if (CallDetector.ActiveCall() != null) { _noticesShown.Clear(); _noticeQueue.Clear(); return; } // asked again after the call
+        var n = _noticeQueue.Dequeue();
+        _acks.Add(new NoticeAck { TaskId = n.TaskId, Action = n.Kind == "suggest" ? "shown_suggest" : "shown_done" });
+        _notice = new NoticeWindow(n, action =>
+        {
+            if (action is "done" or "not_yet" or "undo") _acks.Add(new NoticeAck { TaskId = n.TaskId, Action = action });
+            _notice = null;
+            if (action.Length > 0) _ = UploadAsync(); // tell the app right away
+            ShowNextNotice();
+        });
+        _notice.Show();
     }
 
     /// <summary>Gives Raven 5 seconds to click into the app, then saves that window's layout for support.</summary>

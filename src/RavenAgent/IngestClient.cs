@@ -71,6 +71,23 @@ sealed class IngestClient : IDisposable
         catch { return null; }
     }
 
+    public static List<RavenNotice> ParseNotices(string body)
+    {
+        var list = new List<RavenNotice>();
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("raven_notices", out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+            foreach (var e in arr.EnumerateArray())
+            {
+                string Get(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+                if (Get("task_id").Length > 0) list.Add(new RavenNotice(Get("task_id"), Get("kind"), Get("title"), Get("why")));
+            }
+        }
+        catch { }
+        return list;
+    }
+
     static string Trim(string s) => s.Length > 200 ? s[..200] : s;
 
     public void Dispose() => _http.Dispose();

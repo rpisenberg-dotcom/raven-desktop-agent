@@ -100,7 +100,18 @@ public sealed record IngestPayload
     public List<EmailIdRecord>? EmailIds { get; init; }
     /// <summary>Text conversations open in Phone Link, for business contacts only (never personal or unknown ones).</summary>
     public List<PhoneSnapshotRecord>? PhoneMessages { get; init; }
+    /// <summary>Raven's answers in the desktop pop-ups (Done / Not yet / Undo, or just that it was shown).</summary>
+    public List<NoticeAck>? NoticeAcks { get; init; }
 }
+
+public sealed record NoticeAck
+{
+    public required string TaskId { get; init; }
+    public required string Action { get; init; } // shown_suggest | shown_done | done | not_yet | undo
+}
+
+/// <summary>Something to show Raven: a task Raven marked done from an email, or one it thinks is done.</summary>
+public sealed record RavenNotice(string TaskId, string Kind, string Title, string Why);
 
 public sealed record PhoneSnapshotRecord
 {
