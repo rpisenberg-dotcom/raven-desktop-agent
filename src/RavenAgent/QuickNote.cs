@@ -104,11 +104,11 @@ sealed class QuickNoteWindow : Form
 
         _text = new TextBox { Multiline = true, AcceptsReturn = false, ScrollBars = ScrollBars.Vertical, Location = new Point(12, 80), Size = new Size(436, 110) };
         var hint = new Label { Text = "Enter saves · Shift+Enter for a new line · Esc closes", AutoSize = true, ForeColor = Color.FromArgb(100, 116, 139), Font = new Font("Segoe UI", 8.5f), Location = new Point(12, 212) };
-        var save = new Button { Text = "Save", Location = new Point(368, 204), Size = new Size(80, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(37, 99, 235), ForeColor = Color.White };
-        save.FlatAppearance.BorderSize = 0;
-        save.Click += (_, _) => Save();
+        var saveButton = new Button { Text = "Save", Location = new Point(368, 204), Size = new Size(80, 32), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(37, 99, 235), ForeColor = Color.White };
+        saveButton.FlatAppearance.BorderSize = 0;
+        saveButton.Click += (_, _) => Save();
 
-        Controls.AddRange(new Control[] { clientLabel, _client, _question, _todo, _note, _text, hint, save });
+        Controls.AddRange(new Control[] { clientLabel, _client, _question, _todo, _note, _text, hint, saveButton });
         _text.KeyDown += (_, e) =>
         {
             if (e.KeyCode == Keys.Enter && e.Shift) { _text.SelectedText = Environment.NewLine; e.SuppressKeyPress = true; }
