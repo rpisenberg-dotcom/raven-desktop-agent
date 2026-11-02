@@ -102,6 +102,18 @@ public sealed record IngestPayload
     public List<PhoneSnapshotRecord>? PhoneMessages { get; init; }
     /// <summary>Raven's answers in the desktop pop-ups (Done / Not yet / Undo, or just that it was shown).</summary>
     public List<NoticeAck>? NoticeAcks { get; init; }
+    /// <summary>Notes jotted with Ctrl+Alt+N (questions, to-dos, notes for a client).</summary>
+    public List<QuickNoteRecord>? Notes { get; init; }
+}
+
+public sealed record QuickNoteRecord
+{
+    public required string AgentKey { get; init; }
+    public required string Text { get; init; }
+    public string Kind { get; init; } = "note"; // question | todo | note
+    public string? ClientId { get; init; }
+    public string? Category { get; init; } // client | business | personal
+    public string? Context { get; init; }
 }
 
 public sealed record NoticeAck

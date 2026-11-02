@@ -12,6 +12,9 @@ sealed class ClientDirectory
     static string FilePath => Path.Combine(AgentConfig.DataFolder, "clients.json");
     readonly object _lock = new();
     ClientMatcher _matcher = new(Array.Empty<ClientEntry>());
+    List<ClientEntry> _list = new();
+    /// <summary>Active clients, A to Z (for the quick-note picker).</summary>
+    public List<ClientEntry> All { get { lock (_lock) return _list.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList(); } }
     string _signature = "";
 
     public ClientDirectory()
@@ -58,6 +61,7 @@ sealed class ClientDirectory
             if (json == _signature) return;
             _signature = json;
             _matcher = new ClientMatcher(clients);
+            _list = clients.ToList();
         }
         try
         {

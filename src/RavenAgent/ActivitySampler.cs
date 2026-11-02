@@ -13,6 +13,11 @@ sealed class ActivitySampler
     readonly OutlookContext _outlook;
 
     public string CurrentWindow { get; private set; } = "";
+    /// <summary>The client last seen on screen (for pre-filling a quick note), and when.</summary>
+    public ClientMatch? LastMatch { get; private set; }
+    public DateTime LastMatchUtc { get; private set; }
+    /// <summary>What was in front most recently (app and title, or the call), saved with a quick note.</summary>
+    public string LastContext { get; private set; } = "";
 
     public ActivitySampler(AgentConfig cfg, UploadQueue queue, ClientDirectory clients, ScreenContext screen, OutlookContext outlook)
     {
@@ -70,7 +75,9 @@ sealed class ActivitySampler
                     match = _clients.Matcher.MatchText(title);
                     if (match != null) source = "title";
                 }
-                if (match != null) CurrentWindow += $" [{match.ClientName}]";
+                if (match != null) { CurrentWindow += $" [{match.ClientName}]"; LastMatch = match; LastMatchUtc = now; }
+                if (!process.Contains("RavenAgent", StringComparison.OrdinalIgnoreCase))
+                    LastContext = call != null ? $"Call: {call}" : detail is { Length: > 0 } && detail.Length < 80 ? $"{process}: {detail}" : $"{process}: {title}";
             }
             Enqueue(_builder.Add(new Sample(now, process, title, idle, ignored, url,
                 detail, match?.ClientId, match?.Term, match != null ? source : null, qbo, call)));

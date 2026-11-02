@@ -38,6 +38,9 @@ sealed class TrayApp : ApplicationContext
     readonly HashSet<string> _noticesShown = new();
     readonly Queue<RavenNotice> _noticeQueue = new();
     NoticeWindow? _notice;
+    readonly NoteQueue _notes = new();
+    HotkeyWindow? _hotkey;
+    QuickNoteWindow? _noteWindow;
     DateTime _lastCalQueued = DateTime.MinValue;
     string _lastError = "";
 
@@ -63,6 +66,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(_outlookItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_pauseItem);
+        menu.Items.Add("Jot a note (Ctrl+Alt+N)", null, (_, _) => ShowQuickNote());
         menu.Items.Add("Sync now", null, async (_, _) => { await ReadOutlookAsync(); await UploadAsync(); });
         menu.Items.Add("Settings...", null, (_, _) => ShowSettings());
         menu.Items.Add("Open log folder", null, (_, _) => OpenFolder(Log.Folder));
@@ -71,6 +75,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Shutdown());
 
+        _hotkey = new HotkeyWindow(ShowQuickNote);
         _tray = new NotifyIcon { Icon = MakeIcon(false), ContextMenuStrip = menu, Visible = true, Text = "Raven" };
         _tray.DoubleClick += (_, _) => ShowSettings();
 
@@ -175,7 +180,8 @@ sealed class TrayApp : ApplicationContext
             var ids = _idBackfill.Take(300).ToList();
             texts = _screen.TakePhoneSnapshots();
             var acks = _acks.ToList();
-            if (logs.Count == 0 && emails.Count == 0 && cal == null && ids.Count == 0 && texts.Count == 0 && acks.Count == 0
+            var notes = _notes.Peek();
+            if (logs.Count == 0 && emails.Count == 0 && cal == null && ids.Count == 0 && texts.Count == 0 && acks.Count == 0 && notes.Count == 0
                 && _lastUploadOk is { } last && DateTime.Now - last < TimeSpan.FromMinutes(30)) return;
 
             var payload = new IngestPayload
@@ -191,6 +197,7 @@ sealed class TrayApp : ApplicationContext
                 EmailIds = ids.Count > 0 ? ids : null,
                 PhoneMessages = texts.Count > 0 ? texts : null,
                 NoticeAcks = acks.Count > 0 ? acks : null,
+                Notes = notes.Count > 0 ? notes : null,
             };
             var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, payload);
             if (res.Ok)
@@ -208,6 +215,7 @@ sealed class TrayApp : ApplicationContext
                 }
                 _queue.Remove(logs, emails);
                 _acks.RemoveAll(a => acks.Contains(a));
+                if (notes.Count > 0) { _notes.Remove(notes); _tray.ShowBalloonTip(2500, "Raven", notes.Count == 1 ? "Note saved to Clerical Guru" : $"{notes.Count} notes saved to Clerical Guru", ToolTipIcon.None); }
                 foreach (var n in IngestClient.ParseNotices(res.Message))
                     if (_noticesShown.Add(n.TaskId + n.Kind)) _noticeQueue.Enqueue(n);
                 ShowNextNotice();
@@ -269,6 +277,23 @@ sealed class TrayApp : ApplicationContext
         RefreshStatus();
     }
 
+    /// <summary>Ctrl+Alt+N: jot a question, to-do or note, with the client on screen picked already.</summary>
+    void ShowQuickNote()
+    {
+        if (_noteWindow != null) { _noteWindow.Activate(); return; }
+        // The client seen on screen in the last 10 minutes (QuickBooks, an email, a call...), otherwise none
+        var recent = _sampler.LastMatch != null && DateTime.UtcNow - _sampler.LastMatchUtc < TimeSpan.FromMinutes(10) ? _sampler.LastMatch.ClientId : null;
+        _noteWindow = new QuickNoteWindow(_clients.All, recent, _sampler.LastContext, n =>
+        {
+            _notes.Add(n);
+            Log.Info($"Note jotted ({n.Kind})");
+            _ = UploadAsync();
+        });
+        _noteWindow.FormClosed += (_, _) => _noteWindow = null;
+        _noteWindow.Show();
+        _noteWindow.Activate();
+    }
+
     /// <summary>One pop-up at a time, and never while Raven is in a call (she may be sharing her screen).</summary>
     void ShowNextNotice()
     {
@@ -316,6 +341,7 @@ sealed class TrayApp : ApplicationContext
         _uploadTimer.Stop();
         _outlookTimer.Stop();
         _sampler.Flush(); // saved to the queue on disk; sent on next start
+        _hotkey?.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         _client.Dispose();
