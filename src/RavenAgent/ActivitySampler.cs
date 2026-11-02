@@ -41,7 +41,8 @@ sealed class ActivitySampler
             // Listening in a meeting or call isn't idle, even without typing (and even with another window in front)
             var call = CallDetector.ActiveCall();
             var idle = Native.IdleTime() >= TimeSpan.FromMinutes(_cfg.IdleMinutes) && !Classifier.IsMeeting(process, title) && call == null;
-            var ignored = Classifier.IsIgnored(process, title, _cfg.IgnoreApps, _cfg.IgnoreTitleWords);
+            // The desktop, taskbar, Start, search or Alt+Tab: not work in any program, so not recorded
+            var ignored = Classifier.IsIgnored(process, title, _cfg.IgnoreApps, _cfg.IgnoreTitleWords) || Native.IsWindowsShell(hwnd, process, title);
 
             CurrentWindow = idle ? "Idle" : ignored ? "Private window" : $"{process}: {title}";
             var url = idle || ignored ? null : BrowserUrl.TryGet(hwnd, process, title);
