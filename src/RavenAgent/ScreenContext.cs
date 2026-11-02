@@ -112,11 +112,17 @@ sealed class ScreenContext : IDisposable
                     text = string.Join("\n", text.Split('\n').Where(l => l.Trim().Length > 0).Take(HeaderLines));
                 match = _clients.Matcher.MatchText(text, requireClearWinner: true);
                 detail = match != null ? $"On screen: {match.ClientName}" : null;
-                // Claude / Copilot: label the time with the chat's title so it can be assigned later
+                // Claude / Copilot: label the time with the chat's title so it can be assigned later.
+                // A client named in the title ("Bare Bone Vodka Bottle Labels") wins over names in the messages.
                 if (IsAi(target.Value.process))
                 {
                     var chat = ChatTitle(target.Value.hwnd);
-                    if (chat != null) detail = $"Chat: {chat}";
+                    if (chat != null)
+                    {
+                        detail = $"Chat: {chat}";
+                        var byTitle = _clients.Matcher.MatchText(chat);
+                        if (byTitle != null) match = byTitle;
+                    }
                 }
             }
             lock (_lock)
@@ -385,8 +391,36 @@ sealed class ScreenContext : IDisposable
             foreach (var suffix in new[] { " - Claude", " | Microsoft Copilot", " - Microsoft Copilot", " - Copilot", " | Copilot" })
                 if (name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) name = name[..^suffix.Length].Trim();
             if (name.Length < 3 || NavWords.Contains(name) || name.Equals("Claude", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("Copilot", StringComparison.OrdinalIgnoreCase)) return null;
+                || name.Contains("Copilot", StringComparison.OrdinalIgnoreCase)) name = SelectedChat(window) ?? "";
+            if (name.Length < 3) return null;
             return name.Length > 120 ? name[..120] : name;
+        }
+        catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException) { }
+        return null;
+    }
+
+    /// <summary>The chat highlighted in the app's list of chats (Copilot's page has no title), or null.</summary>
+    static string? SelectedChat(AutomationElement window)
+    {
+        try
+        {
+            var items = window.FindAll(TreeScope.Descendants, new OrCondition(
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem),
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.TreeItem),
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Hyperlink)));
+            foreach (AutomationElement it in items)
+            {
+                try
+                {
+                    if (it.Current.IsOffscreen) continue;
+                    if (!it.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var p) || !((SelectionItemPattern)p).Current.IsSelected) continue;
+                    var name = it.Current.Name?.Trim() ?? "";
+                    if (name.Length >= 3 && !NavWords.Contains(name) && !name.Contains("Copilot", StringComparison.OrdinalIgnoreCase)
+                        && !new[] { "Chat", "Cowork", "New chat", "Search", "Library", "Notebooks", "More" }.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        return name;
+                }
+                catch (ElementNotAvailableException) { }
+            }
         }
         catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or System.Runtime.InteropServices.COMException) { }
         return null;
@@ -406,10 +440,12 @@ sealed class ScreenContext : IDisposable
         {
             try
             {
+                var r = d.Current.BoundingRectangle;
+                if (r.IsEmpty || r.Width < 50 || r.Height < 50 || (d.Current.IsOffscreen && docs.Count > 1)) continue;
                 var named = !string.IsNullOrWhiteSpace(d.Current.Name);
                 var children = 0;
                 for (var c = TreeWalker.ControlViewWalker.GetFirstChild(d); c != null && children < 50; c = TreeWalker.ControlViewWalker.GetNextSibling(c)) children++;
-                var score = (named ? 1000 : 0) + children;
+                var score = (named ? 1000 : 0) + children + (int)Math.Min(500, r.Width * r.Height / 10000);
                 if (score > bestScore) { best = d; bestScore = score; }
             }
             catch (ElementNotAvailableException) { }
