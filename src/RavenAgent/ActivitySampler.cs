@@ -45,7 +45,9 @@ sealed class ActivitySampler
             var (hwnd, process, title) = Native.ForegroundWindow();
             // Listening in a meeting or call isn't idle, even without typing (and even with another window in front)
             var call = CallDetector.ActiveCall();
-            var idle = Native.IdleTime() >= TimeSpan.FromMinutes(_cfg.IdleMinutes) && !Classifier.IsMeeting(process, title) && call == null;
+            // Reading an AI answer or a PDF without touching anything is still work: 15 minutes before "away" there
+            var idleAfter = TimeSpan.FromMinutes(Classifier.IsReading(process, title) ? Math.Max(15, _cfg.IdleMinutes) : _cfg.IdleMinutes);
+            var idle = Native.IdleTime() >= idleAfter && !Classifier.IsMeeting(process, title) && call == null;
             // The desktop, taskbar, Start, search or Alt+Tab: not work in any program, so not recorded
             var ignored = Classifier.IsIgnored(process, title, _cfg.IgnoreApps, _cfg.IgnoreTitleWords) || Native.IsWindowsShell(hwnd, process, title);
 

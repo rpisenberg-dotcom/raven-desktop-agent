@@ -25,7 +25,7 @@ public sealed class SegmentBuilder
         _deviceId = deviceId;
         _interval = sampleInterval;
         _minLength = minLength ?? TimeSpan.FromSeconds(20);
-        _maxLength = maxLength ?? TimeSpan.FromMinutes(15);
+        _maxLength = maxLength ?? TimeSpan.FromMinutes(5); // so the app is never more than ~10 minutes behind
     }
 
     public bool HasOpenSegment => _process != null;

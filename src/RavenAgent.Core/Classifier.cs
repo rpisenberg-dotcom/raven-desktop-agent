@@ -24,6 +24,15 @@ public static class Classifier
 
     public static bool IsAway(string process) => Away.Contains(Normalize(process));
 
+    /// <summary>Apps where Raven reads a lot without touching mouse or keyboard (AI chats, PDFs): more time before "away".</summary>
+    public static bool IsReading(string process, string title)
+    {
+        var p = Normalize(process);
+        return p.Contains("claude") || p.Contains("copilot") || p.Contains("chatgpt") || p.Contains("acrobat") || p.Contains("acrord")
+            || p.Contains("foxit") || title.Contains("Claude", StringComparison.OrdinalIgnoreCase) || title.Contains("ChatGPT", StringComparison.OrdinalIgnoreCase)
+            || title.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) || title.Contains(".pdf -", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static bool IsMeeting(string process, string title) =>
         (MeetingApps.Contains(Normalize(process)) && MeetingTitle.IsMatch(title ?? ""))
         || MeetingUrl.IsMatch(title ?? "");
