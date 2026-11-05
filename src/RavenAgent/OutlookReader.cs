@@ -27,11 +27,14 @@ sealed class OutlookReader
     public static bool IsOutlookRunning() => Process.GetProcessesByName("OUTLOOK").Length > 0;
 
     /// <summary>Must be called on an STA thread (see <see cref="RunOnSta{T}"/>).</summary>
-    public Result? Read(DateTime mailSinceUtc)
+    /// <param name="fullCalendar">Read the whole calendar window (months ahead); otherwise only yesterday to 3 days ahead,
+    /// which is all that changes minute to minute. Reading months of meetings every 5 minutes made Outlook lag.</param>
+    public Result? Read(DateTime mailSinceUtc, bool fullCalendar = true)
     {
         if (!IsOutlookRunning()) { Status = "Outlook is closed - waiting"; return null; }
 
         var started = DateTime.UtcNow;
+        if (_attendees.Count > 20000) _attendees.Clear();
         var emails = new List<EmailRecord>();
         var events = new List<CalendarRecord>();
         var syncs = new List<CalendarSync>();
@@ -43,8 +46,8 @@ sealed class OutlookReader
             app = Activator.CreateInstance(type)!; // attaches to the running Outlook
             dynamic ns = app.GetNamespace("MAPI");
             var sinceLocal = mailSinceUtc.ToLocalTime();
-            var calStart = DateTime.Today.AddDays(-_cfg.CalendarDaysBack);
-            var calEnd = DateTime.Today.AddDays(_cfg.CalendarDaysAhead + 1);
+            var calStart = DateTime.Today.AddDays(fullCalendar ? -_cfg.CalendarDaysBack : -1);
+            var calEnd = DateTime.Today.AddDays(fullCalendar ? _cfg.CalendarDaysAhead + 1 : 4);
             int mailboxes = 0;
             var skipped = new List<string>();
             var allMailboxes = new List<string>();
@@ -115,6 +118,8 @@ sealed class OutlookReader
     }
 
     readonly HashSet<string> _warned = new();
+    readonly Dictionary<string, (string?, string?)> _attendees = new();
+    int _calls;
     void WarnOnce(string storeName, Exception ex)
     {
         if (_warned.Add(storeName)) Log.Error($"Skipping mailbox '{storeName}' (unavailable)", ex);
@@ -229,6 +234,7 @@ sealed class OutlookReader
                 try
                 {
                     if ((int)item!.Class != olMail) continue;
+                    if (++_calls % 25 == 0) Thread.Sleep(15);
                     EmailRecord? rec = ToEmail((object)item, storeName, folderPath, direction);
                     if (rec != null) { into.Add(rec); n++; }
                 }
@@ -327,7 +333,16 @@ sealed class OutlookReader
                     int meetingStatus = SafeInt(() => (int)a.MeetingStatus);
                     int busy = SafeInt(() => (int)a.BusyStatus, 2);
                     string location = SafeString(() => (string)a.Location) ?? "";
-                    var (req, opt) = Recipients((object)a);
+                    // Looking up every attendee's address is the slowest part: only redo it when the meeting changed
+                    var modified = SafeString(() => ((DateTime)a.LastModificationTime).ToString("o")) ?? "";
+                    var key = $"{id}|{modified}";
+                    if (!_attendees.TryGetValue(key, out var people))
+                    {
+                        people = Recipients((object)a);
+                        _attendees[key] = people;
+                    }
+                    var (req, opt) = people;
+                    if (++_calls % 25 == 0) Thread.Sleep(15); // let Outlook handle clicks and typing between reads
 
                     into.Add(new CalendarRecord
                     {

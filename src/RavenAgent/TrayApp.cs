@@ -22,12 +22,15 @@ sealed class TrayApp : ApplicationContext
     readonly System.Windows.Forms.Timer _sampleTimer = new();
     readonly System.Windows.Forms.Timer _uploadTimer = new();
     readonly System.Windows.Forms.Timer _outlookTimer = new();
+    readonly System.Windows.Forms.Timer _outlookRetry = new();
+    DateTime _lastOutlookRead = DateTime.Now, _lastFullCalendar = DateTime.MinValue;
     readonly ToolStripMenuItem _statusItem = new() { Enabled = false };
     readonly ToolStripMenuItem _outlookItem = new() { Enabled = false };
     readonly ToolStripMenuItem _pauseItem = new("Pause recording (private mode)") { CheckOnClick = true };
     readonly ToolStripMenuItem _startupItem = new("Start with Windows") { CheckOnClick = true };
 
     OutlookReader.Result? _pendingCalendar;
+    bool _pendingIsFull;
     readonly object _calLock = new();
     bool _uploading, _readingOutlook;
     DateTime? _lastUploadOk;
@@ -85,6 +88,7 @@ sealed class TrayApp : ApplicationContext
         _uploadTimer.Tick += async (_, _) => await UploadAsync();
         _outlookTimer.Interval = _cfg.OutlookMinutes * 60 * 1000;
         _outlookTimer.Tick += async (_, _) => await ReadOutlookAsync();
+        _outlookRetry.Tick += async (_, _) => { _outlookRetry.Stop(); await ReadOutlookAsync(); };
 
         // Close the open segment when the PC sleeps or locks, so idle time isn't counted
         SystemEvents.PowerModeChanged += (_, e) => { if (e.Mode == PowerModes.Suspend) _sampler.Flush(); };
@@ -122,11 +126,24 @@ sealed class TrayApp : ApplicationContext
     async Task ReadOutlookAsync()
     {
         if (_readingOutlook || _cfg.PrivateMode || !_cfg.ReadOutlook || !_cfg.IsConfigured) return;
+        // Don't read while Raven is working in Outlook (it would make Outlook stutter): wait, up to 15 minutes
+        var (_, front, _) = Native.ForegroundWindow();
+        if (front.Equals("OUTLOOK", StringComparison.OrdinalIgnoreCase) && Native.IdleTime() < TimeSpan.FromSeconds(30)
+            && DateTime.Now - _lastOutlookRead < TimeSpan.FromMinutes(15))
+        {
+            _outlookRetry.Interval = 60_000;
+            _outlookRetry.Start();
+            return;
+        }
         _readingOutlook = true;
         try
         {
             var since = _cfg.LastMailSyncUtc ?? DateTime.UtcNow.AddDays(-_cfg.FirstRunEmailDays);
-            var result = await OutlookReader.RunOnSta(() => _outlook.Read(since));
+            // The full calendar (months ahead) once an hour; in between only the next few days
+            var full = DateTime.Now - _lastFullCalendar > TimeSpan.FromHours(1);
+            var result = await OutlookReader.RunOnSta(() => _outlook.Read(since, full));
+            _lastOutlookRead = DateTime.Now;
+            if (result != null && full) _lastFullCalendar = DateTime.Now;
             if (result != null)
             {
                 if (result.Emails.Count > 0) _queue.Add(result.Emails);
@@ -135,7 +152,8 @@ sealed class TrayApp : ApplicationContext
                 var sig = System.Text.Json.JsonSerializer.Serialize(new { result.Events, Ids = result.Syncs.Select(x => x.ExternalEventIds) }, Json.Options);
                 if (sig != _lastCalSig || DateTime.Now - _lastCalQueued > TimeSpan.FromHours(4))
                 {
-                    lock (_calLock) _pendingCalendar = result;
+                    // A full read still waiting to be sent isn't replaced by a short one (it would lose the months ahead)
+                    lock (_calLock) if (full || !_pendingIsFull || _pendingCalendar == null) { _pendingCalendar = result; _pendingIsFull = full; }
                     _lastCalSig = sig;
                     _lastCalQueued = DateTime.Now;
                 }
