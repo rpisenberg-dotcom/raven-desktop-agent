@@ -118,7 +118,17 @@ sealed class OutlookReader
     }
 
     readonly HashSet<string> _warned = new();
-    readonly Dictionary<string, (string?, string?)> _attendees = new();
+    readonly Dictionary<string, (string?, string?, string?)> _attendees = new();
+
+    static readonly System.Text.RegularExpressions.Regex JoinRe = new(
+        @"https://[^\s<>""']*(teams\.microsoft\.com/l/meetup-join|teams\.live\.com/meet|zoom\.us/(j|w|my)/|meet\.google\.com/|webex\.com/(meet|join|[^\s]*j\.php))[^\s<>""']*",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    static string? JoinLink(string body, string location)
+    {
+        var text = body.Length > 30000 ? body[..30000] : body;
+        var m = JoinRe.Match(location + " " + text);
+        return m.Success ? m.Value.TrimEnd('>', ')', '.', ',') : null;
+    }
     int _calls;
     void WarnOnce(string storeName, Exception ex)
     {
@@ -338,10 +348,12 @@ sealed class OutlookReader
                     var key = $"{id}|{modified}";
                     if (!_attendees.TryGetValue(key, out var people))
                     {
-                        people = Recipients((object)a);
+                        var (r1, r2) = Recipients((object)a);
+                        // The Teams / Zoom / Meet link from the invite, for the "Join" button in the app
+                        people = (r1, r2, JoinLink(SafeString(() => (string)a.Body) ?? "", location));
                         _attendees[key] = people;
                     }
-                    var (req, opt) = people;
+                    var (req, opt, join) = people;
                     if (++_calls % 25 == 0) Thread.Sleep(15); // let Outlook handle clicks and typing between reads
 
                     into.Add(new CalendarRecord
@@ -363,6 +375,7 @@ sealed class OutlookReader
                                          || location.Contains("zoom", StringComparison.OrdinalIgnoreCase),
                             ["organizer"] = SafeString(() => (string)a.Organizer),
                             ["recurring"] = SafeBool(() => (bool)a.IsRecurring),
+                            ["join_url"] = join,
                         },
                     });
                     ids.Add(id);
