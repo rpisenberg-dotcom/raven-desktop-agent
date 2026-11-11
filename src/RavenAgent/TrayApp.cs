@@ -238,6 +238,13 @@ sealed class TrayApp : ApplicationContext
                     _cfg.Save();
                     Log.Info($"Not reading mail from: {string.Join(", ", ignored)}");
                 }
+                var hidden = IngestClient.ParseHiddenCalendars(res.Message);
+                if (hidden != null && !hidden.SequenceEqual(_cfg.HiddenCalendars))
+                {
+                    _cfg.HiddenCalendars = hidden;
+                    _cfg.Save();
+                    Log.Info($"Not reading hidden calendars: {string.Join(", ", hidden)}");
+                }
                 _queue.Remove(logs, emails);
                 _acks.RemoveAll(a => acks.Contains(a));
                 if (notes.Count > 0) { _notes.Remove(notes); _tray.ShowBalloonTip(2500, "Raven", notes.Count == 1 ? "Note saved to Clerical Guru" : $"{notes.Count} notes saved to Clerical Guru", ToolTipIcon.None); }

@@ -26,6 +26,8 @@ sealed class AgentConfig
     public List<string> IgnoreTitleWords { get; set; } = new();
     /// <summary>Mailboxes Raven chose not to have read (set in Clerical Guru, sent with each upload reply).</summary>
     public List<string> IgnoredMailboxes { get; set; } = new();
+    /// <summary>Calendars set to Hidden in Clerical Guru: not read from Outlook at all (less work for Outlook).</summary>
+    public List<string> HiddenCalendars { get; set; } = new();
 
     // Sync bookmarks
     public DateTime? LastMailSyncUtc { get; set; }

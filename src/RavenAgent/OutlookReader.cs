@@ -75,6 +75,7 @@ sealed class OutlookReader
                     foreach (var (calObj, calName) in CalendarFolders(storeObj, storeName))
                     {
                         seenCalendars.Add(SafeString(() => (string)((dynamic)calObj).EntryID) ?? calName);
+                        if (_cfg.HiddenCalendars.Contains(calName, StringComparer.OrdinalIgnoreCase)) continue; // Hidden in Clerical Guru
                         var ids = ReadCalendar(calObj, calName, calStart, calEnd, events);
                         if (ids != null)
                             syncs.Add(new CalendarSync
@@ -99,6 +100,7 @@ sealed class OutlookReader
             // don't live in any mailbox's folder list
             foreach (var (calObj, calName) in NavigationCalendars((object)ns, seenCalendars))
             {
+                if (_cfg.HiddenCalendars.Contains(calName, StringComparer.OrdinalIgnoreCase)) continue; // Hidden in Clerical Guru
                 try
                 {
                     var ids = ReadCalendar(calObj, calName, calStart, calEnd, events);
