@@ -104,7 +104,33 @@ public sealed record IngestPayload
     public List<NoticeAck>? NoticeAcks { get; init; }
     /// <summary>Notes jotted with Ctrl+Alt+N (questions, to-dos, notes for a client).</summary>
     public List<QuickNoteRecord>? Notes { get; init; }
+    /// <summary>A quick check for calendar changes only (nothing else is sent).</summary>
+    public bool? PollOnly { get; init; }
+    /// <summary>What happened to calendar changes made in the app.</summary>
+    public List<CalendarChangeResult>? CalendarChangeResults { get; init; }
 }
+
+/// <summary>A change made in the app (new / edited / deleted event, or "open in Outlook") for the agent to make in Outlook.</summary>
+public sealed record CalendarChange
+{
+    public string Id { get; init; } = "";
+    public string Action { get; init; } = "";
+    public string TargetCalendar { get; init; } = "";
+    public string EntryId { get; init; } = "";
+    public string StoreId { get; init; } = "";
+    public string OccurrenceStart { get; init; } = "";
+    public string Scope { get; init; } = "occurrence";
+    public string? Title { get; init; }
+    public string StartTime { get; init; } = "";
+    public string EndTime { get; init; } = "";
+    public bool? IsAllDay { get; init; }
+    public string? Location { get; init; }
+    public string? Notes { get; init; }
+    public List<string> Attendees { get; init; } = new();
+    public bool Teams { get; init; }
+}
+
+public sealed record CalendarChangeResult(string Id, string Status, string Message, string? EntryId = null);
 
 public sealed record QuickNoteRecord
 {

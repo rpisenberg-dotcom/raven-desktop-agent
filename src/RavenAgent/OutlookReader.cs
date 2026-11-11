@@ -405,6 +405,7 @@ sealed class OutlookReader
         var ids = new List<string>();
         var seen = new HashSet<string>();
         int n = 0;
+        string? storeId = SafeString(() => (string)folder.StoreID);
 
         void Add(dynamic a, DateTime start, DateTime end)
         {
@@ -446,6 +447,8 @@ sealed class OutlookReader
                     ["organizer"] = SafeString(() => (string)a.Organizer),
                     ["recurring"] = SafeBool(() => (bool)a.IsRecurring),
                     ["join_url"] = join,
+                    ["entry_id"] = SafeString(() => (string)a.EntryID),
+                    ["store_id"] = storeId,
                 },
             });
             ids.Add(id);
@@ -554,6 +557,156 @@ sealed class OutlookReader
         sb.AppendLine();
         sb.AppendLine($"Last sync: {Status}");
         return sb.ToString();
+    }
+
+    /// <summary>Every calendar Raven reads, by the name the app knows it by.</summary>
+    Dictionary<string, object> CalendarsByName(object nsObj)
+    {
+        var map = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (storeObj, label) in Mailboxes(nsObj))
+        {
+            try
+            {
+                string storeName = SafeString(() => (string)((dynamic)storeObj).DisplayName) ?? label;
+                foreach (var (calObj, calName) in CalendarFolders(storeObj, storeName))
+                {
+                    seen.Add(SafeString(() => (string)((dynamic)calObj).EntryID) ?? calName);
+                    map.TryAdd(calName, calObj);
+                }
+            }
+            catch { }
+        }
+        foreach (var (calObj, calName) in NavigationCalendars(nsObj, seen)) map.TryAdd(calName, calObj);
+        return map;
+    }
+
+    const int olAppointmentItemType = 1, olMeeting = 1, olMeetingReceived = 3;
+
+    /// <summary>
+    /// Makes calendar changes from the app in Outlook. Never sends invites, updates or cancellations itself: for a
+    /// meeting with other people the event is opened in Outlook for Raven to check and click Send.
+    /// </summary>
+    public List<CalendarChangeResult> ApplyChanges(List<CalendarChange> changes)
+    {
+        var results = new List<CalendarChangeResult>();
+        var type = Type.GetTypeFromProgID("Outlook.Application");
+        if (type == null) return changes.Select(c => new CalendarChangeResult(c.Id, "failed", "Classic Outlook isn't installed")).ToList();
+        dynamic app = Activator.CreateInstance(type)!;
+        dynamic ns = app.GetNamespace("MAPI");
+        Dictionary<string, object>? calendars = null;
+        DateTime Local(string iso) => DateTime.Parse(iso, null, System.Globalization.DateTimeStyles.RoundtripKind).ToLocalTime();
+
+        dynamic Target(CalendarChange c)
+        {
+            if (string.IsNullOrEmpty(c.EntryId)) throw new InvalidOperationException("this event hasn't synced from Outlook yet - try again in a few minutes");
+            dynamic item = string.IsNullOrEmpty(c.StoreId) ? ns.GetItemFromID(c.EntryId) : ns.GetItemFromID(c.EntryId, c.StoreId);
+            if (c.Scope != "series" && !string.IsNullOrEmpty(c.OccurrenceStart) && SafeBool(() => (bool)item.IsRecurring))
+                item = item.GetRecurrencePattern().GetOccurrence(Local(c.OccurrenceStart));
+            return item;
+        }
+        void Fill(dynamic item, CalendarChange c)
+        {
+            if (c.Title != null) item.Subject = c.Title;
+            if (c.IsAllDay != null) item.AllDayEvent = c.IsAllDay.Value;
+            if (!string.IsNullOrEmpty(c.StartTime)) item.Start = Local(c.StartTime);
+            if (!string.IsNullOrEmpty(c.EndTime)) item.End = Local(c.EndTime);
+            if (c.Location != null) item.Location = c.Location;
+            if (c.Notes != null) item.Body = c.Notes;
+        }
+        int Others(dynamic item) => Math.Max(0, SafeInt(() => (int)item.Recipients.Count) - 1);
+
+        foreach (var c in changes)
+        {
+            try
+            {
+                switch (c.Action)
+                {
+                    case "open":
+                    {
+                        dynamic item = Target(c);
+                        item.Display();
+                        OutlookOpener.BringToFront((object)item);
+                        results.Add(new(c.Id, "opened", "Opened in Outlook"));
+                        break;
+                    }
+                    case "create":
+                    {
+                        calendars ??= CalendarsByName((object)ns);
+                        if (!calendars.TryGetValue(c.TargetCalendar, out var folderObj))
+                            throw new InvalidOperationException($"Raven couldn't find the calendar \"{c.TargetCalendar}\" in Outlook");
+                        dynamic item = ((dynamic)folderObj).Items.Add(olAppointmentItemType);
+                        Fill(item, c);
+                        var people = c.Attendees.Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
+                        if (people.Count > 0)
+                        {
+                            item.MeetingStatus = olMeeting;
+                            foreach (var a in people) item.Recipients.Add(a.Trim());
+                            try { item.Recipients.ResolveAll(); } catch { }
+                        }
+                        item.Save();
+                        string? entry = SafeString(() => (string)item.EntryID);
+                        if (people.Count > 0 || c.Teams)
+                        {
+                            item.Display();
+                            OutlookOpener.BringToFront((object)item);
+                            results.Add(new(c.Id, "opened", people.Count > 0
+                                ? (c.Teams ? "Opened in Outlook: click Teams Meeting to add the link, then Send" : "Opened in Outlook: check it and click Send")
+                                : "Saved and opened in Outlook: click Teams Meeting to add the link, then Save", entry));
+                        }
+                        else results.Add(new(c.Id, "done", "Added to Outlook", entry));
+                        break;
+                    }
+                    case "update":
+                    {
+                        dynamic item = Target(c);
+                        Fill(item, c);
+                        int status = SafeInt(() => (int)item.MeetingStatus);
+                        if (status == olMeeting && Others(item) > 0)
+                        {
+                            item.Display(); // changes are in the window, not saved or sent: Raven clicks Send Update
+                            OutlookOpener.BringToFront((object)item);
+                            results.Add(new(c.Id, "opened", "Opened in Outlook with your changes: click Send Update so attendees get them"));
+                        }
+                        else
+                        {
+                            item.Save();
+                            results.Add(new(c.Id, "done", status == olMeetingReceived ? "Changed in your calendar only (you're not the organizer)" : "Changed in Outlook"));
+                        }
+                        if (c.Teams) { item.Display(); OutlookOpener.BringToFront((object)item); }
+                        break;
+                    }
+                    case "delete":
+                    {
+                        dynamic item = Target(c);
+                        int status = SafeInt(() => (int)item.MeetingStatus);
+                        if ((status == olMeeting && Others(item) > 0) || status == olMeetingReceived)
+                        {
+                            item.Display();
+                            OutlookOpener.BringToFront((object)item);
+                            results.Add(new(c.Id, "opened", status == olMeeting
+                                ? "Opened in Outlook: click Cancel Meeting to send the cancellation"
+                                : "Opened in Outlook: click Decline (or Delete) to remove it and tell the organizer"));
+                        }
+                        else
+                        {
+                            item.Delete();
+                            results.Add(new(c.Id, "done", "Deleted from Outlook"));
+                        }
+                        break;
+                    }
+                    default:
+                        results.Add(new(c.Id, "failed", $"Unknown change: {c.Action}"));
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Calendar change {c.Action} failed", ex);
+                results.Add(new(c.Id, "failed", ex is InvalidOperationException ? ex.Message : $"Outlook said: {ex.Message}"));
+            }
+        }
+        return results;
     }
 
     const int olApptMaster = 1;

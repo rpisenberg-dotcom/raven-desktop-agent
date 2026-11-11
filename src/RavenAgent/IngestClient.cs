@@ -71,6 +71,18 @@ sealed class IngestClient : IDisposable
         catch { return null; }
     }
 
+    /// <summary>Calendar changes made in the app, for the agent to make in Outlook.</summary>
+    public static List<CalendarChange> ParseCalendarChanges(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("calendar_changes", out var arr) || arr.ValueKind != JsonValueKind.Array) return new();
+            return arr.Deserialize<List<CalendarChange>>(Json.Options) ?? new();
+        }
+        catch { return new(); }
+    }
+
     public static List<RavenNotice> ParseNotices(string body)
     {
         var list = new List<RavenNotice>();

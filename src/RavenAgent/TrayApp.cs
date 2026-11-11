@@ -23,6 +23,9 @@ sealed class TrayApp : ApplicationContext
     readonly System.Windows.Forms.Timer _uploadTimer = new();
     readonly System.Windows.Forms.Timer _outlookTimer = new();
     readonly System.Windows.Forms.Timer _outlookRetry = new();
+    readonly System.Windows.Forms.Timer _changesTimer = new() { Interval = 90_000 };
+    readonly List<CalendarChangeResult> _changeResults = new();
+    bool _applyingChanges;
     DateTime _lastOutlookRead = DateTime.Now, _lastFullCalendar = DateTime.MinValue;
     readonly ToolStripMenuItem _statusItem = new() { Enabled = false };
     readonly ToolStripMenuItem _outlookItem = new() { Enabled = false };
@@ -90,6 +93,9 @@ sealed class TrayApp : ApplicationContext
         _outlookTimer.Interval = _cfg.OutlookMinutes * 60 * 1000;
         _outlookTimer.Tick += async (_, _) => await ReadOutlookAsync();
         _outlookRetry.Tick += async (_, _) => { _outlookRetry.Stop(); await ReadOutlookAsync(); };
+        // Calendar changes made in the app (new / edited / deleted events): checked every 90 seconds
+        _changesTimer.Tick += async (_, _) => await PollCalendarChangesAsync();
+        _changesTimer.Start();
 
         // Close the open segment when the PC sleeps or locks, so idle time isn't counted
         SystemEvents.PowerModeChanged += (_, e) => { if (e.Mode == PowerModes.Suspend) _sampler.Flush(); };
@@ -124,12 +130,12 @@ sealed class TrayApp : ApplicationContext
         RefreshStatus();
     }
 
-    async Task ReadOutlookAsync()
+    async Task ReadOutlookAsync(bool force = false)
     {
         if (_readingOutlook || _cfg.PrivateMode || !_cfg.ReadOutlook || !_cfg.IsConfigured) return;
         // Don't read while Raven is working in Outlook (it would make Outlook stutter): wait, up to 15 minutes
         var (_, front, _) = Native.ForegroundWindow();
-        if (front.Equals("OUTLOOK", StringComparison.OrdinalIgnoreCase) && Native.IdleTime() < TimeSpan.FromSeconds(30)
+        if (!force && front.Equals("OUTLOOK", StringComparison.OrdinalIgnoreCase) && Native.IdleTime() < TimeSpan.FromSeconds(30)
             && DateTime.Now - _lastOutlookRead < TimeSpan.FromMinutes(15))
         {
             _outlookRetry.Interval = 60_000;
@@ -235,6 +241,7 @@ sealed class TrayApp : ApplicationContext
                 _queue.Remove(logs, emails);
                 _acks.RemoveAll(a => acks.Contains(a));
                 if (notes.Count > 0) { _notes.Remove(notes); _tray.ShowBalloonTip(2500, "Raven", notes.Count == 1 ? "Note saved to Clerical Guru" : $"{notes.Count} notes saved to Clerical Guru", ToolTipIcon.None); }
+                _ = ApplyCalendarChangesAsync(IngestClient.ParseCalendarChanges(res.Message));
                 foreach (var n in IngestClient.ParseNotices(res.Message))
                     if (_noticesShown.Add(n.TaskId + n.Kind)) _noticeQueue.Enqueue(n);
                 ShowNextNotice();
@@ -345,6 +352,41 @@ sealed class TrayApp : ApplicationContext
             OpenFolder(Log.Folder);
         };
         t.Start();
+    }
+
+    /// <summary>Asks Clerical Guru for calendar changes made in the app, and reports what was done with earlier ones.</summary>
+    async Task PollCalendarChangesAsync()
+    {
+        if (!_cfg.IsConfigured || _cfg.PrivateMode || !_cfg.ReadOutlook || _applyingChanges) return;
+        List<CalendarChangeResult> report;
+        lock (_changeResults) report = _changeResults.ToList();
+        var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, new IngestPayload
+        {
+            DeviceId = _cfg.DeviceId, AgentVersion = Version, PollOnly = true, CalendarChangeResults = report.Count > 0 ? report : null,
+        });
+        if (!res.Ok) return;
+        lock (_changeResults) _changeResults.RemoveAll(r => report.Contains(r));
+        await ApplyCalendarChangesAsync(IngestClient.ParseCalendarChanges(res.Message));
+    }
+
+    async Task ApplyCalendarChangesAsync(List<CalendarChange> changes)
+    {
+        if (changes.Count == 0 || _applyingChanges) return;
+        if (!OutlookReader.IsOutlookRunning()) return; // they stay queued and come back in 10 minutes
+        _applyingChanges = true;
+        try
+        {
+            var results = await OutlookReader.RunOnSta(() => _outlook.ApplyChanges(changes));
+            lock (_changeResults) _changeResults.AddRange(results);
+            foreach (var r in results) Log.Info($"Calendar change: {r.Status} - {r.Message}");
+            var failed = results.Count(r => r.Status == "failed");
+            if (failed > 0) _tray.ShowBalloonTip(4000, "Raven", $"{failed} calendar change{(failed == 1 ? "" : "s")} couldn't be made in Outlook - see the Calendar page", ToolTipIcon.Warning);
+        }
+        catch (Exception ex) { Log.Error("Applying calendar changes failed", ex); }
+        finally { _applyingChanges = false; }
+        // Report back now, and read the calendar so the app shows the change in a minute or two
+        _ = PollCalendarChangesAsync();
+        _ = Task.Delay(5000).ContinueWith(_ => _tray.ContextMenuStrip?.BeginInvoke(new Action(async () => { await ReadOutlookAsync(force: true); await UploadAsync(); })));
     }
 
     /// <summary>Support: which calendars Raven sees and whether a meeting is found, saved as a text file to send.</summary>

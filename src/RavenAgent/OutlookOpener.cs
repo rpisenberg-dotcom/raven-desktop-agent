@@ -40,6 +40,21 @@ static class OutlookOpener
                 try { item = store != null && Hex.IsMatch(store) ? ns.GetItemFromID(entry, store) : ns.GetItemFromID(entry); }
                 catch { item = null; }
             }
+            // A calendar event: one meeting of a repeating series opens that meeting, not the whole series
+            if (item != null && q["occ"] is string occ && occ.Length > 0)
+            {
+                try
+                {
+                    if ((bool)item.IsRecurring)
+                        item = item.GetRecurrencePattern().GetOccurrence(DateTime.Parse(occ, null, System.Globalization.DateTimeStyles.RoundtripKind).ToLocalTime());
+                }
+                catch { /* open the series instead */ }
+            }
+            if (item == null && q["kind"] == "event")
+            {
+                MessageBox.Show("Raven couldn't find this event in Outlook. It may have been moved or deleted.", "Raven", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             if (item == null) item = Search((object)ns, msgid, subject, when, mailbox);
             if (item == null && !string.IsNullOrEmpty(mailbox)) item = Search((object)ns, msgid, subject, when, null); // any mailbox
             Log.Info(item == null ? $"Open in Outlook: not found (mailbox {mailbox}, subject {subject})" : "Open in Outlook: found");
@@ -144,7 +159,7 @@ static class OutlookOpener
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(int pid);
 
-    static void BringToFront(object itemObj)
+    internal static void BringToFront(object itemObj)
     {
         try
         {
