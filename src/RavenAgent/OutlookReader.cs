@@ -394,13 +394,63 @@ sealed class OutlookReader
     {
         dynamic folder = folderObj;
         var ids = new List<string>();
+        var seen = new HashSet<string>();
+        int n = 0;
+
+        void Add(dynamic a, DateTime start, DateTime end)
+        {
+            var id = OutlookFilters.OccurrenceId((string)a.EntryID, start);
+            if (!seen.Add(id)) return;
+            int meetingStatus = SafeInt(() => (int)a.MeetingStatus);
+            int busy = SafeInt(() => (int)a.BusyStatus, 2);
+            string location = SafeString(() => (string)a.Location) ?? "";
+            // Looking up every attendee's address is the slowest part: only redo it when the meeting changed
+            var modified = SafeString(() => ((DateTime)a.LastModificationTime).ToString("o")) ?? "";
+            var key = $"{id}|{modified}";
+            if (!_attendees.TryGetValue(key, out var people))
+            {
+                var (r1, r2) = Recipients((object)a);
+                // The Teams / Zoom / Meet link from the invite, for the "Join" button in the app
+                people = (r1, r2, JoinLink(SafeString(() => (string)a.Body) ?? "", location));
+                _attendees[key] = people;
+            }
+            var (req, opt, join) = people;
+            if (++_calls % 25 == 0) Thread.Sleep(15); // let Outlook handle clicks and typing between reads
+
+            into.Add(new CalendarRecord
+            {
+                ExternalEventId = id,
+                Title = SafeString(() => (string)a.Subject) ?? "(No title)",
+                StartTime = Json.Iso(start.ToUniversalTime()),
+                EndTime = Json.Iso(end.ToUniversalTime()),
+                IsAllDay = SafeBool(() => (bool)a.AllDayEvent),
+                Location = location,
+                Attendees = string.Join(", ", new[] { req, opt }.Where(x => x != null))
+                    .Split(", ", StringSplitOptions.RemoveEmptyEntries).ToList(),
+                SourceCalendar = storeName,
+                Metadata = new()
+                {
+                    ["show_as"] = busy switch { 0 => "free", 1 => "tentative", 3 => "out_of_office", 4 => "working_elsewhere", _ => "busy" },
+                    ["cancelled"] = meetingStatus is 5 or 7,
+                    ["online"] = location.Contains("Teams", StringComparison.OrdinalIgnoreCase)
+                                 || location.Contains("zoom", StringComparison.OrdinalIgnoreCase),
+                    ["organizer"] = SafeString(() => (string)a.Organizer),
+                    ["recurring"] = SafeBool(() => (bool)a.IsRecurring),
+                    ["join_url"] = join,
+                },
+            });
+            ids.Add(id);
+            n++;
+        }
+
         try
         {
             dynamic items = folder.Items;
-            items.IncludeRecurrences = true; // expands repeating meetings into each occurrence
+            // Order matters to Outlook: sort by start FIRST, then expand repeating meetings, then filter.
+            // The other way round it can return only a series' first meeting and skip later dates.
             items.Sort("[Start]");
+            items.IncludeRecurrences = true;
             dynamic found = items.Restrict(OutlookFilters.Overlapping(startLocal, endLocal));
-            int n = 0;
             for (dynamic? a = found.GetFirst(); a != null && n < 3000; a = found.GetNext())
             {
                 try
@@ -408,56 +458,66 @@ sealed class OutlookReader
                     if ((int)a!.Class != olAppointment) continue;
                     DateTime start = (DateTime)a.Start, end = (DateTime)a.End;
                     if (start >= endLocal) break; // sorted, so nothing later matters
-                    var id = OutlookFilters.OccurrenceId((string)a.EntryID, start);
-                    int meetingStatus = SafeInt(() => (int)a.MeetingStatus);
-                    int busy = SafeInt(() => (int)a.BusyStatus, 2);
-                    string location = SafeString(() => (string)a.Location) ?? "";
-                    // Looking up every attendee's address is the slowest part: only redo it when the meeting changed
-                    var modified = SafeString(() => ((DateTime)a.LastModificationTime).ToString("o")) ?? "";
-                    var key = $"{id}|{modified}";
-                    if (!_attendees.TryGetValue(key, out var people))
-                    {
-                        var (r1, r2) = Recipients((object)a);
-                        // The Teams / Zoom / Meet link from the invite, for the "Join" button in the app
-                        people = (r1, r2, JoinLink(SafeString(() => (string)a.Body) ?? "", location));
-                        _attendees[key] = people;
-                    }
-                    var (req, opt, join) = people;
-                    if (++_calls % 25 == 0) Thread.Sleep(15); // let Outlook handle clicks and typing between reads
-
-                    into.Add(new CalendarRecord
-                    {
-                        ExternalEventId = id,
-                        Title = SafeString(() => (string)a.Subject) ?? "(No title)",
-                        StartTime = Json.Iso(start.ToUniversalTime()),
-                        EndTime = Json.Iso(end.ToUniversalTime()),
-                        IsAllDay = (bool)a.AllDayEvent,
-                        Location = location,
-                        Attendees = string.Join(", ", new[] { req, opt }.Where(s => s != null))
-                            .Split(", ", StringSplitOptions.RemoveEmptyEntries).ToList(),
-                        SourceCalendar = storeName,
-                        Metadata = new()
-                        {
-                            ["show_as"] = busy switch { 0 => "free", 1 => "tentative", 3 => "out_of_office", 4 => "working_elsewhere", _ => "busy" },
-                            ["cancelled"] = meetingStatus is 5 or 7,
-                            ["online"] = location.Contains("Teams", StringComparison.OrdinalIgnoreCase)
-                                         || location.Contains("zoom", StringComparison.OrdinalIgnoreCase),
-                            ["organizer"] = SafeString(() => (string)a.Organizer),
-                            ["recurring"] = SafeBool(() => (bool)a.IsRecurring),
-                            ["join_url"] = join,
-                        },
-                    });
-                    ids.Add(id);
-                    n++;
+                    if (end <= startLocal) continue;
+                    Add(a, start, end);
                 }
                 catch (Exception ex) { Log.Error("Skipped one calendar item", ex); }
             }
-            return ids;
         }
         catch (Exception ex)
         {
             Log.Error($"Couldn't read calendar in {storeName}", ex);
             return null;
+        }
+
+        // Backup for repeating meetings (some shared and online calendars don't expand them): ask each series
+        // directly for its meeting on each day in the window.
+        try { AddSeriesOccurrences(folder, startLocal, endLocal, Add); }
+        catch (Exception ex) { WarnOnce($"{storeName} (repeating meetings)", ex); }
+        return ids;
+    }
+
+    const int olApptMaster = 1;
+
+    void AddSeriesOccurrences(dynamic folder, DateTime startLocal, DateTime endLocal, Action<dynamic, DateTime, DateTime> add)
+    {
+        dynamic all = folder.Items;
+        dynamic masters = all.Restrict("[IsRecurring] = True");
+        int checkedSeries = 0;
+        for (dynamic? m = masters.GetFirst(); m != null && checkedSeries < 300; m = masters.GetNext())
+        {
+            try
+            {
+                if ((int)m!.Class != olAppointment || SafeInt(() => (int)m.RecurrenceState) != olApptMaster) continue;
+                checkedSeries++;
+                dynamic pattern = m.GetRecurrencePattern();
+                DateTime from = ((DateTime)pattern.PatternStartDate).Date, until = ((DateTime)pattern.PatternEndDate).Date;
+                if (until < startLocal.Date || from > endLocal.Date) continue;
+                TimeSpan at = ((DateTime)pattern.StartTime).TimeOfDay;
+                int type = SafeInt(() => (int)pattern.RecurrenceType); // 0 daily, 1 weekly, 2 monthly, 3 monthly-nth, 5 yearly, 6 yearly-nth
+                int mask = SafeInt(() => (int)pattern.DayOfWeekMask);   // Sunday 1, Monday 2, ... Saturday 64
+                int dayOfMonth = SafeInt(() => (int)pattern.DayOfMonth);
+                for (var day = (startLocal.Date > from ? startLocal.Date : from); day < endLocal && day <= until; day = day.AddDays(1))
+                {
+                    bool candidate = type switch
+                    {
+                        0 => true,
+                        1 => mask == 0 || (mask & (1 << (int)day.DayOfWeek)) != 0,
+                        2 or 5 => dayOfMonth == 0 || day.Day == dayOfMonth,
+                        3 or 6 => mask == 0 || (mask & (1 << (int)day.DayOfWeek)) != 0,
+                        _ => false,
+                    };
+                    if (!candidate) continue;
+                    try
+                    {
+                        dynamic occ = pattern.GetOccurrence(day + at); // throws when the series doesn't meet that day
+                        DateTime s = (DateTime)occ.Start, e = (DateTime)occ.End;
+                        if (e > startLocal && s < endLocal) add(occ, s, e);
+                    }
+                    catch { /* no meeting that day (or it was moved: the main read has those) */ }
+                }
+            }
+            catch (Exception ex) { Log.Error("Skipped one repeating meeting", ex); }
         }
     }
 
