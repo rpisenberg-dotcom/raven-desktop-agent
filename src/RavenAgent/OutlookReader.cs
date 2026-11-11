@@ -117,8 +117,13 @@ sealed class OutlookReader
             Status = $"Read {mailboxes} mailboxes at {DateTime.Now:t}: {emails.Count} new emails, {events.Count} calendar items"
                      + (skipped.Count > 0 ? $" ({skipped.Count} unavailable skipped)" : "");
             // Nearest dates first: if an upload is ever cut short, it's far-off meetings that wait, not tomorrow's
-            events.Sort((a, b) => Math.Abs((DateTime.Parse(a.StartTime).ToUniversalTime() - DateTime.UtcNow).TotalHours)
-                .CompareTo(Math.Abs((DateTime.Parse(b.StartTime).ToUniversalTime() - DateTime.UtcNow).TotalHours)));
+            try
+            {
+                var now = DateTime.UtcNow;
+                double Away(CalendarRecord e) => DateTime.TryParse(e.StartTime, null, System.Globalization.DateTimeStyles.RoundtripKind, out var d) ? Math.Abs((d.ToUniversalTime() - now).TotalHours) : double.MaxValue;
+                events = events.OrderBy(Away).ToList();
+            }
+            catch (Exception ex) { Log.Error("Couldn't sort calendar items", ex); }
             return new Result(emails, events, syncs, started, allMailboxes);
         }
         catch (COMException ex)
@@ -129,7 +134,7 @@ sealed class OutlookReader
         }
         catch (Exception ex)
         {
-            Status = "Couldn't read Outlook - see log";
+            Status = $"Couldn't read Outlook: {ex.GetType().Name}: {ex.Message} (at {ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim()})";
             Log.Error("Outlook read failed", ex);
             return null;
         }
@@ -229,6 +234,7 @@ sealed class OutlookReader
                         {
                             dynamic nf = navFolders.Item(i);
                             dynamic folder = nf.Folder;
+                            if (SafeInt(() => (int)folder.DefaultItemType, -1) != olAppointmentItem) continue; // e.g. mail "Favorites"
                             string id = SafeString(() => (string)folder.EntryID) ?? "";
                             if (id.Length == 0 || !seen.Add(id)) continue; // already read with its mailbox
                             string name = SafeString(() => (string)nf.DisplayName) ?? SafeString(() => (string)folder.Name) ?? "Calendar";
