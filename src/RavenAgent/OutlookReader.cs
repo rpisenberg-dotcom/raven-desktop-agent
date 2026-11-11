@@ -472,8 +472,12 @@ sealed class OutlookReader
 
         // Backup for repeating meetings (some shared and online calendars don't expand them): ask each series
         // directly for its meeting on each day in the window.
-        try { AddSeriesOccurrences(folder, startLocal, endLocal, Add); }
-        catch (Exception ex) { WarnOnce($"{storeName} (repeating meetings)", ex); }
+        // Only for the next two weeks, to keep it light on Outlook (the main read covers the rest).
+        var bStart = startLocal > DateTime.Today.AddDays(-1) ? startLocal : DateTime.Today.AddDays(-1);
+        var bEnd = endLocal < DateTime.Today.AddDays(15) ? endLocal : DateTime.Today.AddDays(15);
+        if (bEnd > bStart)
+            try { AddSeriesOccurrences(folder, bStart, bEnd, Add); }
+            catch (Exception ex) { WarnOnce($"{storeName} (repeating meetings)", ex); }
         return ids;
     }
 
