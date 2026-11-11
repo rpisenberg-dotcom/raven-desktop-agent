@@ -41,7 +41,8 @@ static class OutlookOpener
                 catch { item = null; }
             }
             // A calendar event: one meeting of a repeating series opens that meeting, not the whole series
-            if (item != null && q["occ"] is string occ && occ.Length > 0)
+            string? occ = q["occ"];
+            if (item != null && !string.IsNullOrEmpty(occ))
             {
                 try
                 {
