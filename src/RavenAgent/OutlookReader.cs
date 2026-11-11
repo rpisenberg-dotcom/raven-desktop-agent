@@ -116,6 +116,9 @@ sealed class OutlookReader
 
             Status = $"Read {mailboxes} mailboxes at {DateTime.Now:t}: {emails.Count} new emails, {events.Count} calendar items"
                      + (skipped.Count > 0 ? $" ({skipped.Count} unavailable skipped)" : "");
+            // Nearest dates first: if an upload is ever cut short, it's far-off meetings that wait, not tomorrow's
+            events.Sort((a, b) => Math.Abs((DateTime.Parse(a.StartTime).ToUniversalTime() - DateTime.UtcNow).TotalHours)
+                .CompareTo(Math.Abs((DateTime.Parse(b.StartTime).ToUniversalTime() - DateTime.UtcNow).TotalHours)));
             return new Result(emails, events, syncs, started, allMailboxes);
         }
         catch (COMException ex)
@@ -479,6 +482,72 @@ sealed class OutlookReader
             try { AddSeriesOccurrences(folderObj, bStart, bEnd, new Action<dynamic, DateTime, DateTime>(Add)); }
             catch (Exception ex) { WarnOnce($"{storeName} (repeating meetings)", ex); }
         return ids;
+    }
+
+    /// <summary>
+    /// Support check: every calendar Raven can see and every meeting in the next two weeks whose title contains
+    /// <paramref name="word"/>, read exactly the way the regular sync reads them. Returns a plain-text report.
+    /// </summary>
+    public string CheckCalendars(string word)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Raven calendar check - {DateTime.Now:f} - looking for \"{word}\" from yesterday to 14 days ahead");
+        sb.AppendLine($"Agent version {typeof(OutlookReader).Assembly.GetName().Version}");
+        sb.AppendLine();
+        try
+        {
+            var type = Type.GetTypeFromProgID("Outlook.Application");
+            if (type == null) return sb.AppendLine("Classic Outlook isn't installed.").ToString();
+            dynamic app = Activator.CreateInstance(type)!;
+            dynamic ns = app.GetNamespace("MAPI");
+            var from = DateTime.Today.AddDays(-1);
+            var to = DateTime.Today.AddDays(15);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var calendars = new List<(object, string, string)>();
+            foreach (var (storeObj, label) in Mailboxes((object)ns))
+            {
+                string storeName = label;
+                try
+                {
+                    storeName = SafeString(() => (string)((dynamic)storeObj).DisplayName) ?? label;
+                    foreach (var (calObj, calName) in CalendarFolders(storeObj, storeName))
+                    {
+                        seen.Add(SafeString(() => (string)((dynamic)calObj).EntryID) ?? calName);
+                        calendars.Add((calObj, calName, "mailbox"));
+                    }
+                }
+                catch (Exception ex) { sb.AppendLine($"!! Mailbox {storeName}: {ex.Message}"); }
+            }
+            foreach (var (calObj, calName) in NavigationCalendars((object)ns, seen)) calendars.Add((calObj, calName, "calendar view"));
+
+            sb.AppendLine($"Calendars Raven reads ({calendars.Count}):");
+            foreach (var (calObj, calName, where) in calendars)
+            {
+                var list = new List<CalendarRecord>();
+                var ids = ReadCalendar(calObj, calName, from, to, list);
+                var hits = list.Where(e => e.Title.Contains(word, StringComparison.OrdinalIgnoreCase)).ToList();
+                sb.AppendLine($"- {calName}  [{where}]  {(ids == null ? "COULDN'T READ" : $"{list.Count} meetings")}{(hits.Count > 0 ? $", {hits.Count} matching" : "")}");
+                foreach (var h in hits.OrderBy(h => h.StartTime))
+                    sb.AppendLine($"      {DateTime.Parse(h.StartTime).ToLocalTime():ddd MMM d h:mm tt}  {h.Title}{(h.Metadata?.GetValueOrDefault("recurring") is true ? "  (repeating)" : "")}");
+                // Repeating series in this calendar whose title matches, and what Outlook says about them
+                try
+                {
+                    dynamic masters = ((dynamic)calObj).Items.Restrict("[IsRecurring] = True");
+                    for (dynamic? m = masters.GetFirst(); m != null; m = masters.GetNext())
+                    {
+                        string subj = SafeString(() => (string)m.Subject) ?? "";
+                        if (!subj.Contains(word, StringComparison.OrdinalIgnoreCase)) continue;
+                        dynamic p = m.GetRecurrencePattern();
+                        sb.AppendLine($"      series: {subj} | state {SafeInt(() => (int)m.RecurrenceState)} | type {SafeInt(() => (int)p.RecurrenceType)} | days {SafeInt(() => (int)p.DayOfWeekMask)} | {SafeString(() => ((DateTime)p.PatternStartDate).ToShortDateString())} to {SafeString(() => ((DateTime)p.PatternEndDate).ToShortDateString())} at {SafeString(() => ((DateTime)p.StartTime).ToShortTimeString())}");
+                    }
+                }
+                catch (Exception ex) { sb.AppendLine($"      (couldn't list repeating series: {ex.Message})"); }
+            }
+        }
+        catch (Exception ex) { sb.AppendLine($"!! {ex.GetType().Name}: {ex.Message}"); }
+        sb.AppendLine();
+        sb.AppendLine($"Last sync: {Status}");
+        return sb.ToString();
     }
 
     const int olApptMaster = 1;

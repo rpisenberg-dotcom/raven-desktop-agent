@@ -74,6 +74,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add("Settings...", null, (_, _) => ShowSettings());
         menu.Items.Add("Open log folder", null, (_, _) => OpenFolder(Log.Folder));
         menu.Items.Add("Capture an app's layout for support (in 5 seconds)", null, (_, _) => CaptureLayoutSoon());
+        menu.Items.Add("Check the calendar for a meeting...", null, async (_, _) => await CheckCalendarAsync());
         menu.Items.Add(_startupItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Shutdown());
@@ -344,6 +345,36 @@ sealed class TrayApp : ApplicationContext
             OpenFolder(Log.Folder);
         };
         t.Start();
+    }
+
+    /// <summary>Support: which calendars Raven sees and whether a meeting is found, saved as a text file to send.</summary>
+    async Task CheckCalendarAsync()
+    {
+        var word = Prompt("Check the calendar", "A word from the meeting's title (e.g. BBV):", "BBV");
+        if (string.IsNullOrWhiteSpace(word)) return;
+        _tray.ShowBalloonTip(3000, "Raven", "Checking your calendars - this takes a moment", ToolTipIcon.None);
+        try
+        {
+            var report = await OutlookReader.RunOnSta(() => _outlook.CheckCalendars(word.Trim()));
+            Directory.CreateDirectory(Log.Folder);
+            var file = Path.Combine(Log.Folder, $"calendar-check-{DateTime.Now:yyyyMMdd-HHmm}.txt");
+            File.WriteAllText(file, report);
+            System.Diagnostics.Process.Start("notepad.exe", $"\"{file}\"");
+        }
+        catch (Exception ex) { Log.Error("Calendar check failed", ex); MessageBox.Show($"The check didn't work: {ex.Message}", "Raven"); }
+    }
+
+    static string? Prompt(string title, string label, string initial)
+    {
+        using var f = new Form { Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(360, 120),
+            MinimizeBox = false, MaximizeBox = false, TopMost = true, Font = new Font("Segoe UI", 10f) };
+        var l = new Label { Text = label, AutoSize = true, Location = new Point(12, 12) };
+        var t = new TextBox { Text = initial, Location = new Point(12, 40), Width = 336 };
+        var ok = new Button { Text = "Check", DialogResult = DialogResult.OK, Location = new Point(192, 78), Width = 75 };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(273, 78), Width = 75 };
+        f.Controls.AddRange(new Control[] { l, t, ok, cancel });
+        f.AcceptButton = ok; f.CancelButton = cancel;
+        return f.ShowDialog() == DialogResult.OK ? t.Text : null;
     }
 
     static void OpenFolder(string path)
