@@ -476,15 +476,16 @@ sealed class OutlookReader
         var bStart = startLocal > DateTime.Today.AddDays(-1) ? startLocal : DateTime.Today.AddDays(-1);
         var bEnd = endLocal < DateTime.Today.AddDays(15) ? endLocal : DateTime.Today.AddDays(15);
         if (bEnd > bStart)
-            try { AddSeriesOccurrences(folder, bStart, bEnd, Add); }
+            try { AddSeriesOccurrences(folderObj, bStart, bEnd, new Action<dynamic, DateTime, DateTime>(Add)); }
             catch (Exception ex) { WarnOnce($"{storeName} (repeating meetings)", ex); }
         return ids;
     }
 
     const int olApptMaster = 1;
 
-    void AddSeriesOccurrences(dynamic folder, DateTime startLocal, DateTime endLocal, Action<dynamic, DateTime, DateTime> add)
+    void AddSeriesOccurrences(object folderObj, DateTime startLocal, DateTime endLocal, Action<dynamic, DateTime, DateTime> add)
     {
+        dynamic folder = folderObj;
         dynamic all = folder.Items;
         dynamic masters = all.Restrict("[IsRecurring] = True");
         int checkedSeries = 0;
