@@ -52,6 +52,7 @@ sealed class OutlookReader
             var skipped = new List<string>();
             var allMailboxes = new List<string>();
 
+            var seenCalendars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var (storeObj, label) in Mailboxes((object)ns))
             {
                 // One broken mailbox (e.g. a .pst on a disconnected drive) must not stop the others
@@ -73,6 +74,7 @@ sealed class OutlookReader
 
                     foreach (var (calObj, calName) in CalendarFolders(storeObj, storeName))
                     {
+                        seenCalendars.Add(SafeString(() => (string)((dynamic)calObj).EntryID) ?? calName);
                         var ids = ReadCalendar(calObj, calName, calStart, calEnd, events);
                         if (ids != null)
                             syncs.Add(new CalendarSync
@@ -91,6 +93,25 @@ sealed class OutlookReader
                     skipped.Add(storeName);
                     WarnOnce(storeName, ex);
                 }
+            }
+
+            // Calendars added in Outlook's Calendar view (Shared Calendars, other people's, other accounts'), which
+            // don't live in any mailbox's folder list
+            foreach (var (calObj, calName) in NavigationCalendars((object)ns, seenCalendars))
+            {
+                try
+                {
+                    var ids = ReadCalendar(calObj, calName, calStart, calEnd, events);
+                    if (ids != null)
+                        syncs.Add(new CalendarSync
+                        {
+                            SourceCalendar = calName,
+                            WindowStart = Json.Iso(calStart.ToUniversalTime()),
+                            WindowEnd = Json.Iso(calEnd.ToUniversalTime()),
+                            ExternalEventIds = ids,
+                        });
+                }
+                catch (Exception ex) { WarnOnce(calName, ex); }
             }
 
             Status = $"Read {mailboxes} mailboxes at {DateTime.Now:t}: {emails.Count} new emails, {events.Count} calendar items"
@@ -171,6 +192,54 @@ sealed class OutlookReader
     }
 
     const int olAppointmentItem = 1; // a folder whose default item type is appointments = a calendar
+    const int olModuleCalendar = 1;
+
+    /// <summary>
+    /// Calendars listed in Outlook's Calendar view that aren't in a mailbox's folders: "Shared Calendars",
+    /// "People's calendars", calendars from other accounts. Named "Group / Calendar".
+    /// </summary>
+    List<(object folder, string name)> NavigationCalendars(object nsObj, HashSet<string> seen)
+    {
+        var found = new List<(object, string)>();
+        try
+        {
+            dynamic ns = nsObj;
+            dynamic app = ns.Application;
+            dynamic? exp = null;
+            try { exp = app.ActiveExplorer(); } catch { }
+            if (exp == null) { try { if ((int)app.Explorers.Count > 0) exp = app.Explorers.Item(1); } catch { } }
+            if (exp == null) return found;
+            dynamic module = exp.NavigationPane.Modules.GetNavigationModule(olModuleCalendar);
+            dynamic groups = module.NavigationGroups;
+            int gn = SafeInt(() => (int)groups.Count);
+            for (int g = 1; g <= gn && found.Count < 30; g++)
+            {
+                try
+                {
+                    dynamic group = groups.Item(g);
+                    string groupName = SafeString(() => (string)group.Name) ?? "Calendars";
+                    dynamic navFolders = group.NavigationFolders;
+                    int fn = SafeInt(() => (int)navFolders.Count);
+                    for (int i = 1; i <= fn && found.Count < 30; i++)
+                    {
+                        try
+                        {
+                            dynamic nf = navFolders.Item(i);
+                            dynamic folder = nf.Folder;
+                            string id = SafeString(() => (string)folder.EntryID) ?? "";
+                            if (id.Length == 0 || !seen.Add(id)) continue; // already read with its mailbox
+                            string name = SafeString(() => (string)nf.DisplayName) ?? SafeString(() => (string)folder.Name) ?? "Calendar";
+                            found.Add(((object)folder, $"{groupName} / {name}"));
+                        }
+                        catch (Exception ex) { WarnOnce($"Shared calendar {g}.{i}", ex); }
+                    }
+                }
+                catch (Exception ex) { WarnOnce($"Calendar group {g}", ex); }
+            }
+        }
+        catch (Exception ex) { WarnOnce("Calendar view", ex); }
+        return found;
+    }
 
     /// <summary>
     /// Every calendar in a mailbox: the main one (named after the mailbox) plus extra calendars,
