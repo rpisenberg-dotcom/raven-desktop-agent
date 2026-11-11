@@ -445,6 +445,9 @@ sealed class OutlookReader
                     ["online"] = location.Contains("Teams", StringComparison.OrdinalIgnoreCase)
                                  || location.Contains("zoom", StringComparison.OrdinalIgnoreCase),
                     ["organizer"] = SafeString(() => (string)a.Organizer),
+                    // Your own appointment or a meeting you sent (not one you were invited to): the app keeps this copy
+                    // when the same meeting is on two of your calendars
+                    ["is_organizer"] = meetingStatus is 0 or 1 or 5,
                     ["recurring"] = SafeBool(() => (bool)a.IsRecurring),
                     ["join_url"] = join,
                     ["entry_id"] = SafeString(() => (string)a.EntryID),
