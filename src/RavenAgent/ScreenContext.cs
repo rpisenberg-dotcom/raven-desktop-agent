@@ -129,7 +129,18 @@ sealed class ScreenContext : IDisposable
                         var opening = string.Join("\n", text.Split('\n').Where(l => l.Trim().Length > 60).Take(2));
                         var head = opening.Length > 300 ? opening[..300] : opening;
                         match = _clients.Matcher.MatchText(head, requireClearWinner: true);
-                        if (match != null && detail == null) detail = $"Chat: {(head.Split('\n')[0] is var first && first.Length > 80 ? first[..80] + "…" : head.Split('\n')[0])}";
+                        if (match != null && detail == null) detail = $"Chat: {Short(head.Split('\n')[0])}";
+                    }
+                    // A new chat has no title or messages yet: what you're typing ("Houseworks: can you help me reply…")
+                    if (match == null)
+                    {
+                        var draft = DraftMessage(target.Value.hwnd);
+                        if (draft != null)
+                        {
+                            var head = draft.Length > 200 ? draft[..200] : draft;
+                            match = _clients.Matcher.MatchText(head, requireClearWinner: true);
+                            if (detail == null) detail = $"Chat: {Short(draft)}";
+                        }
                     }
                 }
             }
@@ -389,11 +400,45 @@ sealed class ScreenContext : IDisposable
     }
 
     /// <summary>The open chat's title in Claude / Copilot (the web page's title inside the app), or null.</summary>
+    static string Short(string s) { s = s.Trim(); return s.Length > 80 ? s[..80] + "…" : s; }
+
+    /// <summary>Text of an element: its name, or the names of the text inside it.</summary>
+    static string TextOf(AutomationElement el)
+    {
+        var name = (el.Current.Name ?? "").Trim();
+        if (name.Length > 0) return name;
+        try { if (el.TryGetCurrentPattern(ValuePattern.Pattern, out var v)) { var val = ((ValuePattern)v).Current.Value?.Trim() ?? ""; if (val.Length > 0) return val; } } catch { }
+        var parts = el.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))
+            .Cast<AutomationElement>().Select(t => (t.Current.Name ?? "").Trim()).Where(t => t.Length > 0).Take(20);
+        return string.Join(" ", parts).Trim();
+    }
+
+    /// <summary>The message being typed in Copilot's box, or null.</summary>
+    static string? DraftMessage(IntPtr hwnd)
+    {
+        try
+        {
+            var box = AutomationElement.FromHandle(hwnd).FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "m365-chat-editor-target-element"));
+            if (box == null) return null;
+            var t = TextOf(box);
+            if (t.Equals("Message Copilot", StringComparison.OrdinalIgnoreCase)) t = "";
+            return t.Length >= 3 ? t : null;
+        }
+        catch { return null; }
+    }
+
     static string? ChatTitle(IntPtr hwnd)
     {
         try
         {
             var window = AutomationElement.FromHandle(hwnd);
+            // Copilot app: the open chat's title sits in the "conversation-title" header
+            var header = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "conversation-title"));
+            if (header != null)
+            {
+                var t = TextOf(header);
+                if (t.Length >= 3 && !t.Contains("Copilot", StringComparison.OrdinalIgnoreCase)) return t.Length > 120 ? t[..120] : t;
+            }
             var doc = MainDocument(window);
             var name = (doc?.Current.Name ?? "").Trim();
             foreach (var suffix in new[] { " - Claude", " | Microsoft Copilot", " - Microsoft Copilot", " - Copilot", " | Copilot" })
@@ -464,6 +509,13 @@ sealed class ScreenContext : IDisposable
     /// <summary>Claude / Copilot: just the conversation ("Chat messages"), not the sidebar list of other chats.</summary>
     static AutomationElement? ChatArea(AutomationElement window)
     {
+        // Copilot app: the conversation pane (not the list of other chats beside it)
+        try
+        {
+            var content = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "m365-copilot-app-layout-content"));
+            if (content != null) return content;
+        }
+        catch (ElementNotAvailableException) { }
         var doc = MainDocument(window) ?? window;
         foreach (var name in new[] { "Chat messages", "Conversation", "Messages", "Primary pane" })
         {
