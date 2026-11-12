@@ -112,17 +112,15 @@ sealed class ScreenContext : IDisposable
                     text = string.Join("\n", text.Split('\n').Where(l => l.Trim().Length > 0).Take(HeaderLines));
                 match = _clients.Matcher.MatchText(text, requireClearWinner: true);
                 detail = match != null ? $"On screen: {match.ClientName}" : null;
-                // Claude / Copilot: label the time with the chat's title so it can be assigned later.
-                // A client named in the title ("Bare Bone Vodka Bottle Labels") wins over names in the messages.
+                // Claude / Copilot: label the time with the chat's title so it can be assigned later, and take the
+                // client from the title ("Bare Bone Vodka Bottle Labels") only.
                 if (IsAi(target.Value.process))
                 {
                     var chat = ChatTitle(target.Value.hwnd);
-                    if (chat != null)
-                    {
-                        detail = $"Chat: {chat}";
-                        var byTitle = _clients.Matcher.MatchText(chat);
-                        if (byTitle != null) match = byTitle;
-                    }
+                    // Only the chat's title says which client it's for: names in the messages are often other
+                    // clients (pasted emails, comparisons), so they don't count. No client in the title -> ask.
+                    detail = chat != null ? $"Chat: {chat}" : null;
+                    match = chat != null ? _clients.Matcher.MatchText(chat) : null;
                 }
             }
             lock (_lock)

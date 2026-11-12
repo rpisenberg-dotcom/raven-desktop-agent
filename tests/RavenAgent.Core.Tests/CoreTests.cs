@@ -215,6 +215,14 @@ public class ClientMatcherTests
     }
 
     [Fact]
+    public void Legal_suffix_and_commas_dont_stop_a_match()
+    {
+        var m = new ClientMatcher(new[] { new ClientEntry { Id = "b", Name = "Backyard Spirits LLC", Terms = { "BBV" } } });
+        Assert.Equal("b", m.MatchText("QuickBooks Accountant  Backyard Spirits, LLC  Banking")?.ClientId);
+        Assert.Equal("b", m.MatchText("Backyard Spirits  Dashboard")?.ClientId);
+    }
+
+    [Fact]
     public void Most_mentioned_client_wins_in_a_chat()
     {
         var chat = "Draft an email to Kent at Koplin about the audit. Koplin's payroll... Also cc Fabcast? Koplin wants it Friday.";

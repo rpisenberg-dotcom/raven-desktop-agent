@@ -70,7 +70,7 @@ sealed class ActivitySampler
                     var r = _screen.Get(hwnd, process, title, url);
                     if (r != null) { detail = r.Detail; match = r.Match; }
                     source = "screen";
-                    (detail, match) = QuickBooksCompany(hwnd, url, detail, match);
+                    (detail, match) = QuickBooksCompany(hwnd, url, detail, match, read: r != null);
                 }
                 if (match == null)
                 {
@@ -112,7 +112,7 @@ sealed class ActivitySampler
         try { _cfg.Save(); } catch { }
     }
 
-    (string? detail, ClientMatch? match) QuickBooksCompany(IntPtr hwnd, string? url, string? detail, ClientMatch? match)
+    (string? detail, ClientMatch? match) QuickBooksCompany(IntPtr hwnd, string? url, string? detail, ClientMatch? match, bool read)
     {
         if (string.IsNullOrEmpty(url) || url.IndexOf("qbo.intuit.com", StringComparison.OrdinalIgnoreCase) < 0) return (detail, match);
         if (!_qboLoaded)
@@ -127,7 +127,8 @@ sealed class ActivitySampler
         }
         // Your own practice pages (client list, switching): not inside any client's books
         if (QboPractice.IsMatch(url)) { if (_qboClient != null) RememberQbo(null); return (null, null); }
-        var fresh = _qboClient != null && DateTime.UtcNow - _qboSeen < TimeSpan.FromHours(2);
+        // Full-screen forms hide the header: the client from the header carries over, but only for a while
+        var fresh = _qboClient != null && DateTime.UtcNow - _qboSeen < TimeSpan.FromMinutes(45);
         if (QboForm.IsMatch(url))
             return fresh ? ($"On screen: {_qboClient!.ClientName}", _qboClient) : (null, null);
         if (match != null)
@@ -136,7 +137,11 @@ sealed class ActivitySampler
             else _qboSeen = DateTime.UtcNow;
             return (detail, match);
         }
-        return fresh ? ($"On screen: {_qboClient!.ClientName}", _qboClient) : (detail, match);
+        // An ordinary page whose header was read and names no client you have: you've switched to books Raven
+        // doesn't recognise, so the last client is forgotten (it used to carry on for 2 hours, labelling a
+        // different client's work). Until the page has been read, the last client stands in briefly.
+        if (read) { if (_qboClient != null) { Log.Info($"QuickBooks: header no longer shows {_qboClient.ClientName}"); RememberQbo(null); } return (null, null); }
+        return fresh && DateTime.UtcNow - _qboSeen < TimeSpan.FromMinutes(2) ? ($"On screen: {_qboClient!.ClientName}", _qboClient) : (null, null);
     }
 
     static readonly System.Text.RegularExpressions.Regex QboIdInUrl =

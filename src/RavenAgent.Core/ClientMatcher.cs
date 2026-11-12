@@ -35,15 +35,16 @@ public sealed class ClientMatcher
         ClientCount = list.Count;
         foreach (var c in list)
         {
-            var terms = new[] { c.Name }.Concat(c.Terms)
-                .Select(t => (t ?? "").Trim())
+            var named = new[] { c.Name }.Concat(c.Terms).Select(t => (t ?? "").Trim()).ToList();
+            // "Backyard Spirits LLC" is shown as "Backyard Spirits, LLC" or just "Backyard Spirits" in QuickBooks
+            var terms = named.Concat(named.Select(StripLegal))
                 .Where(t => t.Length >= 3)
                 .Distinct(StringComparer.OrdinalIgnoreCase);
             foreach (var t in terms)
             {
-                // Whole words only, so "ABC" doesn't match "ABCD"; spaces/underscores/dashes are interchangeable
-                // (file names like Koplin_EMC_Audit.xlsx)
-                var body = string.Join(@"[\s_\-\.]*", t.Split(new[] { ' ', '_', '-' }, StringSplitOptions.RemoveEmptyEntries).Select(Regex.Escape));
+                // Whole words only, so "ABC" doesn't match "ABCD"; spaces/underscores/dashes/commas are interchangeable
+                // (file names like Koplin_EMC_Audit.xlsx, "Backyard Spirits, LLC")
+                var body = string.Join(@"[\s_\-\.,&]*", t.Split(new[] { ' ', '_', '-', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(Regex.Escape));
                 _patterns.Add(new Pattern(c, t, new Regex($@"(?<![\p{{L}}\p{{N}}]){body}(?![\p{{L}}\p{{N}}])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)));
             }
             foreach (var d in c.Domains.Where(d => !string.IsNullOrWhiteSpace(d))) _byDomain[d.Trim().TrimStart('@')] = c;
@@ -51,6 +52,14 @@ public sealed class ClientMatcher
         }
         // Longer names first so "Koplin Construction" wins over "Koplin" for the reported term
         _patterns.Sort((a, b) => b.Term.Length.CompareTo(a.Term.Length));
+    }
+
+    static readonly Regex LegalSuffix = new(@"[\s,]+(llc|l\.l\.c\.?|inc\.?|incorporated|corp\.?|corporation|co\.?|company|ltd\.?|llp|pllc|p\.?a\.?)$", RegexOptions.IgnoreCase);
+    /// <summary>The name without "LLC", "Inc." and the like, when what's left is still a real name (4+ letters).</summary>
+    static string StripLegal(string name)
+    {
+        var s = LegalSuffix.Replace(name.Trim(), "").Trim().TrimEnd(',').Trim();
+        return s.Length >= 4 ? s : name;
     }
 
     /// <summary>
