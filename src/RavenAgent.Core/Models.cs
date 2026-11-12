@@ -104,6 +104,8 @@ public sealed record IngestPayload
     public List<NoticeAck>? NoticeAcks { get; init; }
     /// <summary>Notes jotted with Ctrl+Alt+N (questions, to-dos, notes for a client).</summary>
     public List<QuickNoteRecord>? Notes { get; init; }
+    /// <summary>Teams live captions while a meeting is being transcribed.</summary>
+    public List<LiveTranscriptRecord>? LiveTranscripts { get; init; }
     /// <summary>Screenshots taken with Ctrl+Alt+S (for the meeting going on).</summary>
     public List<MeetingSnapRecord>? MeetingSnaps { get; init; }
     /// <summary>A quick check for calendar changes only (nothing else is sent).</summary>
@@ -133,6 +135,25 @@ public sealed record CalendarChange
 }
 
 public sealed record CalendarChangeResult(string Id, string Status, string Message, string? EntryId = null);
+
+public sealed record LiveTranscriptRecord
+{
+    public required string MeetingKey { get; init; }
+    public required string Title { get; init; }
+    public required string StartedAt { get; init; }
+    public string? LastSeenAt { get; init; }
+    public bool Ended { get; init; }
+    /// <summary>Position of the first line here in the whole transcript.</summary>
+    public int FromLine { get; init; }
+    public List<LiveTranscriptLine> Lines { get; init; } = new();
+}
+
+public sealed record LiveTranscriptLine
+{
+    public string Speaker { get; init; } = "";
+    public string Text { get; init; } = "";
+    public string At { get; init; } = "";
+}
 
 public sealed record MeetingSnapRecord
 {

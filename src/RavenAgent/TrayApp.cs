@@ -47,6 +47,9 @@ sealed class TrayApp : ApplicationContext
     readonly NoteQueue _notes = new();
     HotkeyWindow? _hotkey, _snapKey;
     readonly List<MeetingSnapRecord> _snaps = new();
+    readonly CaptionReader _captions = new();
+    readonly System.Threading.Timer _captionTimer;
+    int _captionBusy;
     QuickNoteWindow? _noteWindow;
     DateTime _lastCalQueued = DateTime.MinValue;
     string _lastError = "";
@@ -97,8 +100,20 @@ sealed class TrayApp : ApplicationContext
         _outlookTimer.Tick += async (_, _) => await ReadOutlookAsync();
         _outlookRetry.Tick += async (_, _) => { _outlookRetry.Stop(); await ReadOutlookAsync(); };
         // Calendar changes made in the app (new / edited / deleted events): checked every 90 seconds
-        _changesTimer.Tick += async (_, _) => { await SendSnapsAsync(); await PollCalendarChangesAsync(); };
+        _changesTimer.Tick += async (_, _) => { await SendSnapsAsync(); await SendCaptionsAsync(); await PollCalendarChangesAsync(); };
         _changesTimer.Start();
+        // Teams captions: a look every 8 seconds, only while a call is using the microphone (or a captured meeting is ending)
+        _captionTimer = new System.Threading.Timer(_ =>
+        {
+            if (Interlocked.Exchange(ref _captionBusy, 1) == 1) return;
+            try
+            {
+                if (_cfg.PrivateMode || !_cfg.CaptureCaptions) return;
+                if (CallDetector.ActiveCall() != null || _captions.HasSession) _captions.Tick();
+            }
+            catch (Exception ex) { Log.Error("Captions", ex); }
+            finally { Interlocked.Exchange(ref _captionBusy, 0); }
+        }, null, 15_000, 8_000);
 
         // Close the open segment when the PC sleeps or locks, so idle time isn't counted
         SystemEvents.PowerModeChanged += (_, e) => { if (e.Mode == PowerModes.Suspend) _sampler.Flush(); };
@@ -377,6 +392,18 @@ sealed class TrayApp : ApplicationContext
         _ = SendSnapsAsync();
     }
 
+    /// <summary>New caption lines go to Clerical Guru every 90 seconds, so the transcript is there when the meeting ends.</summary>
+    async Task SendCaptionsAsync()
+    {
+        var batch = _captions.TakeUnsent().Where(r => r.Lines.Count > 0 || r.Ended).ToList();
+        if (batch.Count == 0 || !_cfg.IsConfigured) return;
+        var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, new IngestPayload
+        {
+            DeviceId = _cfg.DeviceId, AgentVersion = Version, PollOnly = true, LiveTranscripts = batch,
+        });
+        if (res.Ok) _captions.MarkSent(batch);
+    }
+
     async Task SendSnapsAsync()
     {
         List<MeetingSnapRecord> batch;
@@ -472,6 +499,7 @@ sealed class TrayApp : ApplicationContext
         _sampler.Flush(); // saved to the queue on disk; sent on next start
         _hotkey?.Dispose();
         _snapKey?.Dispose();
+        _captionTimer.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         _client.Dispose();

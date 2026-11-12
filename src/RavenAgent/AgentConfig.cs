@@ -28,6 +28,8 @@ sealed class AgentConfig
     public List<string> IgnoredMailboxes { get; set; } = new();
     /// <summary>Calendars set to Hidden in Clerical Guru: not read from Outlook at all (less work for Outlook).</summary>
     public List<string> HiddenCalendars { get; set; } = new();
+    /// <summary>Copy Teams live captions into the meeting while Teams is recording/transcribing it.</summary>
+    public bool CaptureCaptions { get; set; } = true;
 
     // Sync bookmarks
     public DateTime? LastMailSyncUtc { get; set; }
