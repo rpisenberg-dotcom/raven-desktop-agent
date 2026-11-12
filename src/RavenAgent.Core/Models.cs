@@ -104,6 +104,8 @@ public sealed record IngestPayload
     public List<NoticeAck>? NoticeAcks { get; init; }
     /// <summary>Notes jotted with Ctrl+Alt+N (questions, to-dos, notes for a client).</summary>
     public List<QuickNoteRecord>? Notes { get; init; }
+    /// <summary>Screenshots taken with Ctrl+Alt+S (for the meeting going on).</summary>
+    public List<MeetingSnapRecord>? MeetingSnaps { get; init; }
     /// <summary>A quick check for calendar changes only (nothing else is sent).</summary>
     public bool? PollOnly { get; init; }
     /// <summary>What happened to calendar changes made in the app.</summary>
@@ -131,6 +133,15 @@ public sealed record CalendarChange
 }
 
 public sealed record CalendarChangeResult(string Id, string Status, string Message, string? EntryId = null);
+
+public sealed record MeetingSnapRecord
+{
+    public required string AgentKey { get; init; }
+    public required string CapturedAt { get; init; }
+    public required string ImageBase64 { get; init; }
+    public string? WindowTitle { get; init; }
+    public string? ClientId { get; init; }
+}
 
 public sealed record QuickNoteRecord
 {

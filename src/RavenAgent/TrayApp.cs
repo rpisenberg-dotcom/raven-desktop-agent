@@ -45,7 +45,8 @@ sealed class TrayApp : ApplicationContext
     readonly Queue<RavenNotice> _noticeQueue = new();
     NoticeWindow? _notice;
     readonly NoteQueue _notes = new();
-    HotkeyWindow? _hotkey;
+    HotkeyWindow? _hotkey, _snapKey;
+    readonly List<MeetingSnapRecord> _snaps = new();
     QuickNoteWindow? _noteWindow;
     DateTime _lastCalQueued = DateTime.MinValue;
     string _lastError = "";
@@ -73,6 +74,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_pauseItem);
         menu.Items.Add("Jot a note (Ctrl+Alt+N)", null, (_, _) => ShowQuickNote());
+        menu.Items.Add("Screenshot for this meeting (Ctrl+Alt+S)", null, (_, _) => TakeSnap());
         menu.Items.Add("Sync now", null, async (_, _) => { await ReadOutlookAsync(); await UploadAsync(); });
         menu.Items.Add("Settings...", null, (_, _) => ShowSettings());
         menu.Items.Add("Open log folder", null, (_, _) => OpenFolder(Log.Folder));
@@ -83,6 +85,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add("Exit", null, (_, _) => Shutdown());
 
         _hotkey = new HotkeyWindow(ShowQuickNote);
+        _snapKey = new HotkeyWindow(TakeSnap, Keys.S);
         _tray = new NotifyIcon { Icon = MakeIcon(false), ContextMenuStrip = menu, Visible = true, Text = "Raven" };
         _tray.DoubleClick += (_, _) => ShowSettings();
 
@@ -94,7 +97,7 @@ sealed class TrayApp : ApplicationContext
         _outlookTimer.Tick += async (_, _) => await ReadOutlookAsync();
         _outlookRetry.Tick += async (_, _) => { _outlookRetry.Stop(); await ReadOutlookAsync(); };
         // Calendar changes made in the app (new / edited / deleted events): checked every 90 seconds
-        _changesTimer.Tick += async (_, _) => await PollCalendarChangesAsync();
+        _changesTimer.Tick += async (_, _) => { await SendSnapsAsync(); await PollCalendarChangesAsync(); };
         _changesTimer.Start();
 
         // Close the open segment when the PC sleeps or locks, so idle time isn't counted
@@ -361,6 +364,34 @@ sealed class TrayApp : ApplicationContext
         t.Start();
     }
 
+    /// <summary>Ctrl+Alt+S: save what's on screen to the meeting going on (sent right away; retried with the next check).</summary>
+    void TakeSnap()
+    {
+        if (_cfg.PrivateMode) { _tray.ShowBalloonTip(3000, "Raven", "Private mode is on: no screenshot taken.", ToolTipIcon.Info); return; }
+        var recent = _sampler.LastMatch != null && DateTime.UtcNow - _sampler.LastMatchUtc < TimeSpan.FromMinutes(10) ? _sampler.LastMatch.ClientId : null;
+        var snap = MeetingSnap.Take(recent);
+        if (snap == null) { _tray.ShowBalloonTip(3000, "Raven", "Couldn't take the screenshot.", ToolTipIcon.Warning); return; }
+        lock (_snaps) _snaps.Add(snap);
+        Log.Info("Screenshot taken for the meeting");
+        _tray.ShowBalloonTip(2000, "Raven", "Screenshot saved for this meeting.", ToolTipIcon.Info);
+        _ = SendSnapsAsync();
+    }
+
+    async Task SendSnapsAsync()
+    {
+        List<MeetingSnapRecord> batch;
+        lock (_snaps) batch = _snaps.Take(3).ToList();
+        if (batch.Count == 0 || !_cfg.IsConfigured) return;
+        var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, new IngestPayload
+        {
+            DeviceId = _cfg.DeviceId, AgentVersion = Version, PollOnly = true, MeetingSnaps = batch,
+        });
+        if (!res.Ok) { Log.Info("Screenshot not sent yet; will retry"); return; }
+        lock (_snaps) _snaps.RemoveAll(s => batch.Contains(s));
+        if (_cfg.ReadOutlook) await ApplyCalendarChangesAsync(IngestClient.ParseCalendarChanges(res.Message));
+        lock (_snaps) if (_snaps.Count > 0) _ = SendSnapsAsync();
+    }
+
     /// <summary>Asks Clerical Guru for calendar changes made in the app, and reports what was done with earlier ones.</summary>
     async Task PollCalendarChangesAsync()
     {
@@ -440,6 +471,7 @@ sealed class TrayApp : ApplicationContext
         _outlookTimer.Stop();
         _sampler.Flush(); // saved to the queue on disk; sent on next start
         _hotkey?.Dispose();
+        _snapKey?.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         _client.Dispose();

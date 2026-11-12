@@ -4,22 +4,24 @@ using RavenAgent.Core;
 
 namespace RavenAgent;
 
-/// <summary>Ctrl+Alt+N anywhere: a hidden window that receives the system-wide hotkey.</summary>
+/// <summary>Ctrl+Alt+(key) anywhere: a hidden window that receives the system-wide hotkey (N = note, S = screenshot).</summary>
 sealed class HotkeyWindow : NativeWindow, IDisposable
 {
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mods, uint vk);
     [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-    const int WM_HOTKEY = 0x0312, Id = 0x5241;
+    const int WM_HOTKEY = 0x0312;
+    readonly int Id;
     const uint MOD_ALT = 1, MOD_CONTROL = 2, MOD_NOREPEAT = 0x4000;
     readonly Action _pressed;
     public bool Registered { get; }
 
-    public HotkeyWindow(Action pressed)
+    public HotkeyWindow(Action pressed, Keys key = Keys.N)
     {
         _pressed = pressed;
+        Id = 0x5200 + (int)key;
         CreateHandle(new CreateParams());
-        Registered = RegisterHotKey(Handle, Id, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, (uint)Keys.N);
-        if (!Registered) Log.Info("Ctrl+Alt+N is already used by another program; use the tray menu to jot a note");
+        Registered = RegisterHotKey(Handle, Id, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, (uint)key);
+        if (!Registered) Log.Info($"Ctrl+Alt+{key} is already used by another program; use the tray menu instead");
     }
 
     protected override void WndProc(ref Message m)
