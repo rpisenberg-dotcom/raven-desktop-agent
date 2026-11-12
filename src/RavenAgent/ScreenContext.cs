@@ -121,6 +121,16 @@ sealed class ScreenContext : IDisposable
                     // clients (pasted emails, comparisons), so they don't count. No client in the title -> ask.
                     detail = chat != null ? $"Chat: {chat}" : null;
                     match = chat != null ? _clients.Matcher.MatchText(chat) : null;
+                    // You start chats with the client's name ("Intrepid Spirits: I received this email..."), so the
+                    // opening lines of the chat count too, when the title doesn't name one (long lines only: the list
+                    // of other chats down the side has short titles)
+                    if (match == null)
+                    {
+                        var opening = string.Join("\n", text.Split('\n').Where(l => l.Trim().Length > 60).Take(2));
+                        var head = opening.Length > 300 ? opening[..300] : opening;
+                        match = _clients.Matcher.MatchText(head, requireClearWinner: true);
+                        if (match != null && detail == null) detail = $"Chat: {(head.Split('\n')[0] is var first && first.Length > 80 ? first[..80] + "…" : head.Split('\n')[0])}";
+                    }
                 }
             }
             lock (_lock)
