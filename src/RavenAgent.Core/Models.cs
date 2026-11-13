@@ -104,6 +104,8 @@ public sealed record IngestPayload
     public List<NoticeAck>? NoticeAcks { get; init; }
     /// <summary>Notes jotted with Ctrl+Alt+N (questions, to-dos, notes for a client).</summary>
     public List<QuickNoteRecord>? Notes { get; init; }
+    /// <summary>Ctrl+Alt+R: draft a reply to this email (the selected one in Outlook).</summary>
+    public DraftRequest? DraftRequest { get; init; }
     /// <summary>Teams live captions while a meeting is being transcribed.</summary>
     public List<LiveTranscriptRecord>? LiveTranscripts { get; init; }
     /// <summary>Screenshots taken with Ctrl+Alt+S (for the meeting going on).</summary>
@@ -135,6 +137,19 @@ public sealed record CalendarChange
 }
 
 public sealed record CalendarChangeResult(string Id, string Status, string Message, string? EntryId = null);
+
+public sealed record DraftRequest
+{
+    public string? EntryId { get; init; }
+    public string? Subject { get; init; }
+    public string? FromEmail { get; init; }
+    public string? FromName { get; init; }
+    public string? To { get; init; }
+    public string? Cc { get; init; }
+    public string? Body { get; init; }
+    public string? ReceivedAt { get; init; }
+    public string? Guidance { get; init; }
+}
 
 public sealed record LiveTranscriptRecord
 {

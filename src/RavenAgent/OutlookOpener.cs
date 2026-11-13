@@ -109,6 +109,14 @@ static class OutlookOpener
                 catch (Exception ex) { Log.Error("Couldn't fetch the draft", ex); }
             }
         }
+        if (draft.Length == 0) MessageBox.Show("Raven couldn't fetch the draft, so the reply is empty. Use Copy in the app and paste it in.", "Raven");
+        OpenReply(itemObj, draft, all);
+    }
+
+    /// <summary>Outlook's Reply (All) window for the email, with the draft above your signature and the original.</summary>
+    internal static void OpenReply(object itemObj, string draft, bool all)
+    {
+        dynamic item = itemObj;
         dynamic reply = all ? item.ReplyAll() : item.Reply();
         reply.Display(); // shown first, so Outlook adds your reply signature
         if (draft.Length > 0)
@@ -120,7 +128,6 @@ static class OutlookOpener
             var m = Regex.Match(body, "<body[^>]*>", RegexOptions.IgnoreCase);
             reply.HTMLBody = m.Success ? body.Insert(m.Index + m.Length, html) : html + body;
         }
-        else MessageBox.Show("Raven couldn't fetch the draft, so the reply is empty. Use Copy in the app and paste it in.", "Raven");
         BringToFront((object)reply);
         Log.Info($"Reply opened in Outlook (draft {(draft.Length > 0 ? "added" : "missing")})");
     }

@@ -45,7 +45,8 @@ sealed class TrayApp : ApplicationContext
     readonly Queue<RavenNotice> _noticeQueue = new();
     NoticeWindow? _notice;
     readonly NoteQueue _notes = new();
-    HotkeyWindow? _hotkey, _snapKey;
+    HotkeyWindow? _hotkey, _snapKey, _replyKey;
+    bool _drafting;
     readonly List<MeetingSnapRecord> _snaps = new();
     readonly CaptionReader _captions = new();
     readonly System.Threading.Timer _captionTimer;
@@ -78,6 +79,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(_pauseItem);
         menu.Items.Add("Jot a note (Ctrl+Alt+N)", null, (_, _) => ShowQuickNote());
         menu.Items.Add("Screenshot for this meeting (Ctrl+Alt+S)", null, (_, _) => TakeSnap());
+        menu.Items.Add("Draft a reply to the selected email (Ctrl+Alt+R)", null, (_, _) => _ = DraftReplyAsync());
         menu.Items.Add("Sync now", null, async (_, _) => { await ReadOutlookAsync(); await UploadAsync(); });
         menu.Items.Add("Settings...", null, (_, _) => ShowSettings());
         menu.Items.Add("Open log folder", null, (_, _) => OpenFolder(Log.Folder));
@@ -89,6 +91,7 @@ sealed class TrayApp : ApplicationContext
 
         _hotkey = new HotkeyWindow(ShowQuickNote);
         _snapKey = new HotkeyWindow(TakeSnap, Keys.S);
+        _replyKey = new HotkeyWindow(() => _ = DraftReplyAsync(), Keys.R);
         _tray = new NotifyIcon { Icon = MakeIcon(false), ContextMenuStrip = menu, Visible = true, Text = "Raven" };
         _tray.DoubleClick += (_, _) => ShowSettings();
 
@@ -471,14 +474,84 @@ sealed class TrayApp : ApplicationContext
         catch (Exception ex) { Log.Error("Calendar check failed", ex); MessageBox.Show($"The check didn't work: {ex.Message}", "Raven"); }
     }
 
-    static string? Prompt(string title, string label, string initial)
+    /// <summary>
+    /// Ctrl+Alt+R: Raven drafts a reply to the email selected (or open) in Outlook, from what she knows about the
+    /// client, and opens Outlook's Reply All window with it typed in. Nothing is sent; you review and press Send.
+    /// </summary>
+    async Task DraftReplyAsync()
     {
-        using var f = new Form { Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(360, 120),
+        if (_drafting) return;
+        if (!_cfg.IsConfigured) { _tray.ShowBalloonTip(3000, "Raven", "Set up the agent first (Settings).", ToolTipIcon.Info); return; }
+        if (!OutlookReader.IsOutlookRunning()) { _tray.ShowBalloonTip(3000, "Raven", "Open Outlook and select the email first.", ToolTipIcon.Info); return; }
+        object? item = null;
+        DraftRequest? req = null;
+        try
+        {
+            dynamic app = Activator.CreateInstance(Type.GetTypeFromProgID("Outlook.Application")!)!;
+            dynamic? window = app.ActiveWindow();
+            if (window != null)
+            {
+                try { item = (object)window.CurrentItem; } catch { }
+                if (item == null) { try { dynamic sel = window.Selection; if ((int)sel.Count > 0) item = (object)sel.Item(1); } catch { } }
+            }
+            if (item == null) { try { dynamic sel = app.ActiveExplorer().Selection; if ((int)sel.Count > 0) item = (object)sel.Item(1); } catch { } }
+            dynamic? m = item;
+            if (m == null || (int)m.Class != 43) // 43 = an email
+            {
+                _tray.ShowBalloonTip(3000, "Raven", "Select an email in Outlook first, then press Ctrl+Alt+R.", ToolTipIcon.Info);
+                return;
+            }
+            string S(Func<object?> f) { try { return Convert.ToString(f()) ?? ""; } catch { return ""; } }
+            string body = S(() => m.Body);
+            req = new DraftRequest
+            {
+                EntryId = S(() => m.EntryID), Subject = S(() => m.Subject), FromName = S(() => m.SenderName),
+                FromEmail = OutlookContext.SenderAddress((object)m) ?? S(() => m.SenderEmailAddress),
+                To = S(() => m.To), Cc = S(() => m.CC), Body = body.Length > 20000 ? body[..20000] : body,
+                ReceivedAt = DateTime.TryParse(S(() => m.ReceivedTime), out var r) ? Json.Iso(r.ToUniversalTime()) : null,
+            };
+        }
+        catch (Exception ex) { Log.Error("Reading the selected email", ex); _tray.ShowBalloonTip(3000, "Raven", "Couldn't read the selected email.", ToolTipIcon.Warning); return; }
+
+        var subject = req.Subject ?? "";
+        var guidance = Prompt("Draft a reply with Raven", $"Re: {(subject.Length > 45 ? subject[..45] + "…" : subject)}\nAnything Raven should say? (optional)", "", "Draft", height: 150);
+        if (guidance == null) return; // cancelled
+        _drafting = true;
+        _tray.ShowBalloonTip(4000, "Raven", "Drafting your reply… (about 20 seconds)", ToolTipIcon.Info);
+        try
+        {
+            var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, new IngestPayload
+            {
+                DeviceId = _cfg.DeviceId, AgentVersion = Version, PollOnly = true, DraftRequest = req with { Guidance = guidance },
+            });
+            string draft = "", error = res.Ok ? "" : res.Message;
+            if (res.Ok)
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(res.Message);
+                if (doc.RootElement.TryGetProperty("draft", out var d)) draft = d.GetString() ?? "";
+                if (doc.RootElement.TryGetProperty("error", out var e)) error = e.GetString() ?? "";
+            }
+            if (draft.Length == 0)
+            {
+                Log.Info($"Draft failed: {error}");
+                _tray.ShowBalloonTip(5000, "Raven", "Couldn't draft that reply. Please try again in a minute.", ToolTipIcon.Warning);
+                return;
+            }
+            OutlookOpener.OpenReply(item!, draft, all: true);
+            if (draft.Contains("[[")) _tray.ShowBalloonTip(5000, "Raven", "Draft ready. Fill in the [[blanks]] before you send.", ToolTipIcon.Info);
+        }
+        catch (Exception ex) { Log.Error("Draft reply", ex); _tray.ShowBalloonTip(5000, "Raven", "Couldn't draft that reply.", ToolTipIcon.Warning); }
+        finally { _drafting = false; }
+    }
+
+    static string? Prompt(string title, string label, string initial, string okText = "Check", int height = 120)
+    {
+        using var f = new Form { Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(360, height),
             MinimizeBox = false, MaximizeBox = false, TopMost = true, Font = new Font("Segoe UI", 10f) };
         var l = new Label { Text = label, AutoSize = true, Location = new Point(12, 12) };
-        var t = new TextBox { Text = initial, Location = new Point(12, 40), Width = 336 };
-        var ok = new Button { Text = "Check", DialogResult = DialogResult.OK, Location = new Point(192, 78), Width = 75 };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(273, 78), Width = 75 };
+        var t = new TextBox { Text = initial, Location = new Point(12, height - 80), Width = 336 };
+        var ok = new Button { Text = okText, DialogResult = DialogResult.OK, Location = new Point(192, height - 42), Width = 75 };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(273, height - 42), Width = 75 };
         f.Controls.AddRange(new Control[] { l, t, ok, cancel });
         f.AcceptButton = ok; f.CancelButton = cancel;
         return f.ShowDialog() == DialogResult.OK ? t.Text : null;
@@ -499,6 +572,7 @@ sealed class TrayApp : ApplicationContext
         _sampler.Flush(); // saved to the queue on disk; sent on next start
         _hotkey?.Dispose();
         _snapKey?.Dispose();
+        _replyKey?.Dispose();
         _captionTimer.Dispose();
         _tray.Visible = false;
         _tray.Dispose();

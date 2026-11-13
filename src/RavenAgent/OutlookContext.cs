@@ -102,7 +102,7 @@ sealed class OutlookContext
         return (detail, match);
     }
 
-    static string? SenderAddress(object mailObj)
+    internal static string? SenderAddress(object mailObj)
     {
         dynamic m = mailObj;
         try
