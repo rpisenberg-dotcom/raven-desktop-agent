@@ -9,6 +9,8 @@ namespace RavenAgent;
 /// Uses Outlook's own ids when the app has them (emails read by agent 0.2.6+), otherwise finds
 /// the email by its internet message id in that mailbox's Inbox and Sent Items.
 /// Only ever displays an email; it never changes or sends anything.
+///   ravenagent://reply?draft=<email id>&all=1&entry=..  opens Outlook's Reply (All) window with Raven's draft typed in
+///   (fetched from Clerical Guru); Raven reviews it and presses Send herself.
 /// </summary>
 static class OutlookOpener
 {
@@ -66,6 +68,11 @@ static class OutlookOpener
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+            if (new Uri(url).Host.Equals("reply", StringComparison.OrdinalIgnoreCase))
+            {
+                Reply((object)item, q["draft"], q["all"] == "1");
+                return;
+            }
             item.Display();
             BringToFront((object)item);
         }
@@ -74,6 +81,48 @@ static class OutlookOpener
             Log.Error("Open in Outlook failed", ex);
             MessageBox.Show("Raven couldn't open this email in Outlook.", "Raven", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    /// <summary>Opens the reply window with the draft from Clerical Guru above the quoted email (and your signature).</summary>
+    static void Reply(object itemObj, string? draftId, bool all)
+    {
+        dynamic item = itemObj;
+        string draft = "";
+        if (!string.IsNullOrWhiteSpace(draftId))
+        {
+            var cfg = AgentConfig.Load();
+            if (cfg.IsConfigured)
+            {
+                try
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+                    using var req = new HttpRequestMessage(HttpMethod.Post, cfg.IngestUrl)
+                    {
+                        Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { get_draft = draftId, device_id = cfg.DeviceId }),
+                            System.Text.Encoding.UTF8, "application/json"),
+                    };
+                    req.Headers.Add("x-agent-key", cfg.AgentKey);
+                    var res = http.Send(req);
+                    using var doc = System.Text.Json.JsonDocument.Parse(res.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+                    if (doc.RootElement.TryGetProperty("draft", out var d)) draft = d.GetString() ?? "";
+                }
+                catch (Exception ex) { Log.Error("Couldn't fetch the draft", ex); }
+            }
+        }
+        dynamic reply = all ? item.ReplyAll() : item.Reply();
+        reply.Display(); // shown first, so Outlook adds your reply signature
+        if (draft.Length > 0)
+        {
+            var html = string.Join("", draft.Replace("\r", "").Split("\n\n").Select(p =>
+                $"<p style=\"margin:0 0 12px 0\">{System.Net.WebUtility.HtmlEncode(p).Replace("\n", "<br>")}</p>"));
+            html = $"<div style=\"font-family:Calibri,Arial,sans-serif;font-size:11pt\">{html}</div>";
+            string body = (string)reply.HTMLBody;
+            var m = Regex.Match(body, "<body[^>]*>", RegexOptions.IgnoreCase);
+            reply.HTMLBody = m.Success ? body.Insert(m.Index + m.Length, html) : html + body;
+        }
+        else MessageBox.Show("Raven couldn't fetch the draft, so the reply is empty. Use Copy in the app and paste it in.", "Raven");
+        BringToFront((object)reply);
+        Log.Info($"Reply opened in Outlook (draft {(draft.Length > 0 ? "added" : "missing")})");
     }
 
     /// <summary>
