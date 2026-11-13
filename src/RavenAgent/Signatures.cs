@@ -114,6 +114,17 @@ static class Signatures
         catch { return null; }
     }
 
+    /// <summary>The signature HTML as plain lines of text.</summary>
+    public static string PlainOf(string html)
+    {
+        var h = Regex.Replace(html, @"<!--.*?-->|<style.*?</style>", "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        h = Regex.Replace(h, @"</p>|<br[^>]*>|</div>|</tr>", "\n", RegexOptions.IgnoreCase);
+        return System.Net.WebUtility.HtmlDecode(Regex.Replace(h, "<[^>]+>", "")).Replace('\u00A0', ' ');
+    }
+
+    /// <summary>Letters only, for comparing names ("Raven," = "raven").</summary>
+    static string Letters(string s) => new string(s.Where(char.IsLetter).ToArray()).ToLowerInvariant();
+
     static IEnumerable<string> Lines(string text) =>
         text.Replace("\r", "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0);
 
@@ -123,11 +134,11 @@ static class Signatures
     /// <summary>The draft without its last line when that's the name your signature starts with.</summary>
     public static string DropRepeatedName(string draft, string? sigText)
     {
-        var first = sigText == null ? null : Lines(sigText).FirstOrDefault();
-        if (string.IsNullOrEmpty(first) || first.Length > 40) return draft;
+        var first = sigText == null ? "" : Letters(Lines(sigText).FirstOrDefault(l => Letters(l).Length > 0) ?? "");
         var lines = draft.Replace("\r", "").TrimEnd().Split('\n').ToList();
-        if (lines.Count > 1 && lines[^1].Trim().TrimEnd(',', '.').Equals(first.TrimEnd(',', '.'), StringComparison.OrdinalIgnoreCase))
-            lines.RemoveAt(lines.Count - 1);
+        while (lines.Count > 0 && Letters(lines[^1]).Length == 0) lines.RemoveAt(lines.Count - 1);
+        // The draft ends with just your name, and your signature starts with it (or there's no signature text to compare)
+        if (lines.Count > 1 && first.Length is > 0 and <= 30 && Letters(lines[^1]) == first) lines.RemoveAt(lines.Count - 1);
         return string.Join("\n", lines).TrimEnd();
     }
 

@@ -128,35 +128,64 @@ static class OutlookOpener
             try { dynamic a = reply.SendUsingAccount; smtp = (string)a.SmtpAddress ?? ""; acct = (string)a.DisplayName ?? ""; } catch { }
             if (smtp.Length == 0) { try { dynamic store = item.Parent.Store; acct = (string)store.DisplayName ?? ""; smtp = acct; } catch { } }
             string body = (string)reply.HTMLBody;
-            string plain = "";
-            try { plain = (string)reply.Body ?? ""; } catch { }
-            var sigText = Signatures.TextFor(smtp, acct);
-            // Already there: Outlook's own signature for replies (marked, or its first lines are in the new part)
-            var top = plain.Split(new[] { "-----Original Message-----", "\r\nFrom: " }, 2, StringSplitOptions.None)[0];
-            var outlookAddedSig = body.Contains("_MailAutoSig", StringComparison.OrdinalIgnoreCase)
-                || (sigText != null && Signatures.Distinctive(sigText).Any(l => top.Contains(l, StringComparison.OrdinalIgnoreCase)));
-            // Your signature starts with your name ("Raven"): don't sign the draft twice
+            // Your formatted signature for this mailbox (pictures attached inline), when one is set
+            string? sig = null;
+            try { sig = Signatures.HtmlFor((object)reply, smtp, acct); } catch (Exception ex) { Log.Error("Signature", ex); }
+            var sigText = sig != null ? Signatures.PlainOf(sig) : Signatures.TextFor(smtp, acct);
+            // It starts with your name ("Raven"): don't sign the draft twice
             draft = Signatures.DropRepeatedName(draft, sigText);
 
             const string font = "font-family:'Segoe UI',sans-serif;font-size:11pt";
             var html = string.Join("", draft.Replace("\r", "").Split("\n\n").Select(p =>
                 $"<p style=\"margin:0 0 12pt 0;{font}\"><span style=\"{font}\">{System.Net.WebUtility.HtmlEncode(p).Replace("\n", "<br>")}</span></p>"));
             html = $"<div style=\"{font}\">{html}</div>";
-            if (!outlookAddedSig)
+            var bodyTag = Regex.Match(body, "<body[^>]*>", RegexOptions.IgnoreCase);
+            var start = bodyTag.Success ? bodyTag.Index + bodyTag.Length : 0;
+            var (cut, reopen) = OriginalStart(body, start);
+            if (sig != null && cut > start)
             {
-                try
-                {
-                    var sig = Signatures.HtmlFor((object)reply, smtp, acct);
-                    if (sig != null) html += $"<div>{sig}</div>";
-                    else Log.Info($"No signature set for {smtp} {acct}");
-                }
-                catch (Exception ex) { Log.Error("Adding the signature", ex); }
+                // Replace whatever Outlook put above the original (its own, sometimes plain-text, copy of the signature)
+                reply.HTMLBody = body[..start] + html + $"<div>{sig}</div><p class=MsoNormal>&nbsp;</p>" + reopen + body[cut..];
+                Log.Info($"Reply: draft + signature '{smtp}' added, Outlook's top part replaced");
             }
-            var m = Regex.Match(body, "<body[^>]*>", RegexOptions.IgnoreCase);
-            reply.HTMLBody = m.Success ? body.Insert(m.Index + m.Length, html) : html + body;
+            else
+            {
+                reply.HTMLBody = body.Insert(start, html + (sig != null ? $"<div>{sig}</div>" : ""));
+                Log.Info($"Reply: draft added; signature {(sig != null ? "added" : $"not found for {smtp} / {acct}")}; original found: {cut > start}");
+            }
         }
         BringToFront((object)reply);
         Log.Info($"Reply opened in Outlook (draft {(draft.Length > 0 ? "added" : "missing")})");
+    }
+
+    /// <summary>
+    /// Where the quoted original email begins in a reply's HTML (its "From: / Sent:" header block), and the tags to
+    /// re-open if that point is in the middle of a paragraph (replies to plain-text emails). (-1, "") if not found.
+    /// </summary>
+    static (int at, string reopen) OriginalStart(string body, int from)
+    {
+        var best = -1; var reopen = "";
+        foreach (var marker in new[] { "id=\"divRplyFwdMsg\"", "id=divRplyFwdMsg", "border-top:solid #E1E1E1", "border-top:solid #B5C4DF" })
+        {
+            var i = body.IndexOf(marker, from, StringComparison.OrdinalIgnoreCase);
+            if (i < 0) continue;
+            var div = body.LastIndexOf("<div", i, StringComparison.OrdinalIgnoreCase);
+            if (div >= from && (best < 0 || div < best)) { best = div; reopen = ""; }
+        }
+        var om = body.IndexOf("-----Original Message-----", from, StringComparison.OrdinalIgnoreCase);
+        if (om >= 0 && (best < 0 || om < best))
+        {
+            // Plain-text reply converted to HTML: the header is inside the same paragraph as Outlook's signature
+            var p = body.LastIndexOf("<p", om, StringComparison.OrdinalIgnoreCase);
+            var tagEnd = p >= 0 ? body.LastIndexOf('>', om) : -1;
+            if (p >= from && tagEnd > p)
+            {
+                var open = Regex.Match(body[p..(tagEnd + 1)], @"^<p[^>]*>(\s*<span[^>]*>)*");
+                reopen = open.Success ? open.Value : "<p>";
+            }
+            best = om;
+        }
+        return (best, reopen);
     }
 
     /// <summary>
