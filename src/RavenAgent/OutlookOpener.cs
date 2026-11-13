@@ -118,22 +118,34 @@ static class OutlookOpener
     {
         dynamic item = itemObj;
         dynamic reply = all ? item.ReplyAll() : item.Reply();
-        reply.Display(); // shown first, so Outlook adds your reply signature if you've set one for replies
+        // Replies to plain-text emails start as plain text, which loses your formatted signature: make it HTML first,
+        // so Outlook puts in the formatted signature (with pictures) when it opens
+        try { if ((int)reply.BodyFormat != 2) reply.BodyFormat = 2; } catch { }
+        reply.Display();
         if (draft.Length > 0)
         {
+            string smtp = "", acct = "";
+            try { dynamic a = reply.SendUsingAccount; smtp = (string)a.SmtpAddress ?? ""; acct = (string)a.DisplayName ?? ""; } catch { }
+            if (smtp.Length == 0) { try { dynamic store = item.Parent.Store; acct = (string)store.DisplayName ?? ""; smtp = acct; } catch { } }
+            string body = (string)reply.HTMLBody;
+            string plain = "";
+            try { plain = (string)reply.Body ?? ""; } catch { }
+            var sigText = Signatures.TextFor(smtp, acct);
+            // Already there: Outlook's own signature for replies (marked, or its first lines are in the new part)
+            var top = plain.Split(new[] { "-----Original Message-----", "\r\nFrom: " }, 2, StringSplitOptions.None)[0];
+            var outlookAddedSig = body.Contains("_MailAutoSig", StringComparison.OrdinalIgnoreCase)
+                || (sigText != null && Signatures.Distinctive(sigText).Any(l => top.Contains(l, StringComparison.OrdinalIgnoreCase)));
+            // Your signature starts with your name ("Raven"): don't sign the draft twice
+            draft = Signatures.DropRepeatedName(draft, sigText);
+
             const string font = "font-family:'Segoe UI',sans-serif;font-size:11pt";
             var html = string.Join("", draft.Replace("\r", "").Split("\n\n").Select(p =>
                 $"<p style=\"margin:0 0 12pt 0;{font}\"><span style=\"{font}\">{System.Net.WebUtility.HtmlEncode(p).Replace("\n", "<br>")}</span></p>"));
             html = $"<div style=\"{font}\">{html}</div>";
-            string body = (string)reply.HTMLBody;
-            // That mailbox's own signature, unless Outlook already put one in
-            if (!body.Contains("_MailAutoSig", StringComparison.OrdinalIgnoreCase))
+            if (!outlookAddedSig)
             {
                 try
                 {
-                    string smtp = "", acct = "";
-                    try { dynamic a = reply.SendUsingAccount; smtp = (string)a.SmtpAddress ?? ""; acct = (string)a.DisplayName ?? ""; } catch { }
-                    if (smtp.Length == 0) { try { dynamic store = item.Parent.Store; acct = (string)store.DisplayName ?? ""; smtp = acct; } catch { } }
                     var sig = Signatures.HtmlFor((object)reply, smtp, acct);
                     if (sig != null) html += $"<div>{sig}</div>";
                     else Log.Info($"No signature set for {smtp} {acct}");

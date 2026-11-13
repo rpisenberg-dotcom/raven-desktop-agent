@@ -80,10 +80,55 @@ static class Signatures
             }
             catch (Exception ex) { Log.Error("Signature picture", ex); return match.Value; }
         }, RegexOptions.IgnoreCase);
+        // Word signatures space their lines through a style sheet (MsoNormal = no gaps) that stays behind in the file
+        body = Regex.Replace(body, @"<p\b([^>]*)>", pm =>
+        {
+            var attrs = pm.Groups[1].Value;
+            if (Regex.IsMatch(attrs, @"style\s*=\s*""", RegexOptions.IgnoreCase))
+                return "<p" + Regex.Replace(attrs, @"style\s*=\s*""", "style=\"margin:0;", RegexOptions.IgnoreCase) + ">";
+            return $"<p{attrs} style=\"margin:0\">";
+        }, RegexOptions.IgnoreCase);
         // VML pictures (Word's "v:imagedata") duplicate the <img>s for old Outlook; the <img> is enough
         body = Regex.Replace(body, @"<!--\[if gte vml 1\]>.*?<!\[endif\]-->", "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
         body = body.Replace("<![if !vml]>", "").Replace("<![endif]>", "");
         return body;
+    }
+
+    /// <summary>The signature as plain lines of text (from its .txt twin, or its HTML), or null.</summary>
+    public static string? TextFor(string smtp, string accountName)
+    {
+        var name = NameFor(smtp, accountName);
+        if (name == null) return null;
+        try
+        {
+            var txt = Path.Combine(Folder, name + ".txt");
+            if (File.Exists(txt)) return ReadHtml(txt);
+            var htm = Path.Combine(Folder, name + ".htm");
+            if (!File.Exists(htm)) return null;
+            var h = ReadHtml(htm);
+            var m = Regex.Match(h, @"<body[^>]*>(.*)</body>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            h = Regex.Replace(m.Success ? m.Groups[1].Value : h, @"<!--.*?-->", "", RegexOptions.Singleline);
+            h = Regex.Replace(h, @"</p>|<br[^>]*>|</div>", "\n", RegexOptions.IgnoreCase);
+            return System.Net.WebUtility.HtmlDecode(Regex.Replace(h, "<[^>]+>", "")).Replace('\u00A0', ' ');
+        }
+        catch { return null; }
+    }
+
+    static IEnumerable<string> Lines(string text) =>
+        text.Replace("\r", "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0);
+
+    /// <summary>Lines that say it's this signature (long enough not to be a common word).</summary>
+    public static IEnumerable<string> Distinctive(string sigText) => Lines(sigText).Where(l => l.Length >= 12).Take(3);
+
+    /// <summary>The draft without its last line when that's the name your signature starts with.</summary>
+    public static string DropRepeatedName(string draft, string? sigText)
+    {
+        var first = sigText == null ? null : Lines(sigText).FirstOrDefault();
+        if (string.IsNullOrEmpty(first) || first.Length > 40) return draft;
+        var lines = draft.Replace("\r", "").TrimEnd().Split('\n').ToList();
+        if (lines.Count > 1 && lines[^1].Trim().TrimEnd(',', '.').Equals(first.TrimEnd(',', '.'), StringComparison.OrdinalIgnoreCase))
+            lines.RemoveAt(lines.Count - 1);
+        return string.Join("\n", lines).TrimEnd();
     }
 
     /// <summary>Signature files are saved in the PC's old code page (Windows-1252) or with a charset tag.</summary>
