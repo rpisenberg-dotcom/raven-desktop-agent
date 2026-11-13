@@ -58,6 +58,8 @@ public sealed record EmailRecord
     /// <summary>Outlook's own ids, so the app can open the original email in Outlook.</summary>
     public string? OutlookEntryId { get; init; }
     public string? OutlookStoreId { get; init; }
+    /// <summary>Names of the files attached (not pictures in signatures), so Raven knows when something was sent.</summary>
+    public List<string>? AttachmentNames { get; init; }
 }
 
 public sealed record CalendarRecord

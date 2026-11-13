@@ -360,7 +360,35 @@ sealed class OutlookReader
             IsRead = direction == "sent" || !(bool)m.UnRead,
             OutlookEntryId = entryId,
             OutlookStoreId = SafeString(() => (string)m.Parent.StoreID),
+            AttachmentNames = AttachmentNames((object)m),
         };
+    }
+
+    /// <summary>Real attachments ("Packlist.pdf"), not the little pictures inside signatures.</summary>
+    static List<string>? AttachmentNames(object mailObj)
+    {
+        try
+        {
+            dynamic atts = ((dynamic)mailObj).Attachments;
+            int n = (int)atts.Count;
+            if (n == 0) return null;
+            var names = new List<string>();
+            for (int i = 1; i <= n && names.Count < 10; i++)
+            {
+                dynamic a = atts.Item(i);
+                string name = SafeString(() => (string)a.FileName) ?? "";
+                if (name.Length == 0) continue;
+                bool hidden = false;
+                try { hidden = (bool)a.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"); } catch { }
+                string cid = "";
+                try { cid = (string)a.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F") ?? ""; } catch { }
+                bool sigPicture = System.Text.RegularExpressions.Regex.IsMatch(name, @"^image\d{3}\.(png|jpe?g|gif)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                    || (cid.Length > 0 && System.Text.RegularExpressions.Regex.IsMatch(name, @"\.(png|jpe?g|gif|bmp)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+                if (!hidden && !sigPicture) names.Add(name);
+            }
+            return names.Count > 0 ? names : null;
+        }
+        catch { return null; }
     }
 
     static string? SenderAddress(object mailObj)
