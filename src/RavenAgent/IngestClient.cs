@@ -9,10 +9,12 @@ namespace RavenAgent;
 sealed class IngestClient : IDisposable
 {
     readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) };
+    // Drafting a reply waits on the AI, which can take a minute or two for a long email
+    readonly HttpClient _slow = new() { Timeout = TimeSpan.FromSeconds(180) };
 
     public sealed record SendResult(bool Ok, string Message);
 
-    public async Task<SendResult> SendAsync(string url, string key, IngestPayload payload, CancellationToken ct = default)
+    public async Task<SendResult> SendAsync(string url, string key, IngestPayload payload, CancellationToken ct = default, bool slow = false)
     {
         try
         {
@@ -20,7 +22,7 @@ sealed class IngestClient : IDisposable
             req.Headers.Add("x-agent-key", key);
             req.Headers.UserAgent.Add(new ProductInfoHeaderValue("RavenAgent", payload.AgentVersion));
             req.Content = new StringContent(JsonSerializer.Serialize(payload, Json.Options), Encoding.UTF8, "application/json");
-            using var res = await _http.SendAsync(req, ct);
+            using var res = await (slow ? _slow : _http).SendAsync(req, ct);
             var body = await res.Content.ReadAsStringAsync(ct);
             if (res.IsSuccessStatusCode) return new(true, body);
             var reason = (int)res.StatusCode switch

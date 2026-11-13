@@ -523,7 +523,7 @@ sealed class TrayApp : ApplicationContext
             var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, new IngestPayload
             {
                 DeviceId = _cfg.DeviceId, AgentVersion = Version, PollOnly = true, DraftRequest = req with { Guidance = guidance },
-            });
+            }, slow: true);
             string draft = "", error = res.Ok ? "" : res.Message;
             if (res.Ok)
             {
@@ -534,13 +534,14 @@ sealed class TrayApp : ApplicationContext
             if (draft.Length == 0)
             {
                 Log.Info($"Draft failed: {error}");
-                _tray.ShowBalloonTip(5000, "Raven", "Couldn't draft that reply. Please try again in a minute.", ToolTipIcon.Warning);
+                var why = string.IsNullOrWhiteSpace(error) ? "no draft came back" : error.Length > 150 ? error[..150] : error;
+                _tray.ShowBalloonTip(8000, "Raven couldn't draft that reply", why, ToolTipIcon.Warning);
                 return;
             }
             OutlookOpener.OpenReply(item!, draft, all: true);
             if (draft.Contains("[[")) _tray.ShowBalloonTip(5000, "Raven", "Draft ready. Fill in the [[blanks]] before you send.", ToolTipIcon.Info);
         }
-        catch (Exception ex) { Log.Error("Draft reply", ex); _tray.ShowBalloonTip(5000, "Raven", "Couldn't draft that reply.", ToolTipIcon.Warning); }
+        catch (Exception ex) { Log.Error("Draft reply", ex); _tray.ShowBalloonTip(8000, "Raven couldn't draft that reply", ex.Message.Length > 150 ? ex.Message[..150] : ex.Message, ToolTipIcon.Warning); }
         finally { _drafting = false; }
     }
 
