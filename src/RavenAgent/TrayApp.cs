@@ -514,7 +514,7 @@ sealed class TrayApp : ApplicationContext
         catch (Exception ex) { Log.Error("Reading the selected email", ex); _tray.ShowBalloonTip(3000, "Raven", "Couldn't read the selected email.", ToolTipIcon.Warning); return; }
 
         var subject = req.Subject ?? "";
-        var guidance = Prompt("Draft a reply with Raven", $"Re: {(subject.Length > 45 ? subject[..45] + "…" : subject)}\nAnything Raven should say? (optional)", "", "Draft", height: 150);
+        var guidance = AskGuidance(subject, req.FromName ?? req.FromEmail ?? "");
         if (guidance == null) return; // cancelled
         _drafting = true;
         _tray.ShowBalloonTip(4000, "Raven", "Drafting your reply… (about 20 seconds)", ToolTipIcon.Info);
@@ -543,6 +543,42 @@ sealed class TrayApp : ApplicationContext
         }
         catch (Exception ex) { Log.Error("Draft reply", ex); _tray.ShowBalloonTip(8000, "Raven couldn't draft that reply", ex.Message.Length > 150 ? ex.Message[..150] : ex.Message, ToolTipIcon.Warning); }
         finally { _drafting = false; }
+    }
+
+    /// <summary>A roomy box for telling Raven what the reply should say. Enter = new line, Ctrl+Enter = Draft. Null if cancelled.</summary>
+    static string? AskGuidance(string subject, string from)
+    {
+        using var f = new Form
+        {
+            Text = "Draft a reply with Raven", StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(560, 330),
+            MinimumSize = new Size(420, 280), MinimizeBox = false, MaximizeBox = false, TopMost = true, Font = new Font("Segoe UI", 10f),
+            KeyPreview = true,
+        };
+        var head = new Label
+        {
+            Text = $"Reply to {(from.Length > 40 ? from[..40] + "…" : from)}: {(subject.Length > 60 ? subject[..60] + "…" : subject)}",
+            AutoEllipsis = true, Location = new Point(12, 10), Size = new Size(536, 22), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+        };
+        var hint = new Label
+        {
+            Text = "What should the reply say? Points to make, answers, tone, what to attach or promise. Leave empty to let Raven decide from what she knows.",
+            Location = new Point(12, 34), Size = new Size(536, 40), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, ForeColor = Color.DimGray,
+        };
+        var box = new TextBox
+        {
+            Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true,
+            Location = new Point(12, 78), Size = new Size(536, 196), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+            PlaceholderText = "e.g. Thank Darin. I'll sign the BBV acceptance block today and send it back once White Dog signs. Ask him to confirm the transfer date.",
+        };
+        var tip = new Label { Text = "Ctrl+Enter to draft", AutoSize = true, ForeColor = Color.Gray, Location = new Point(12, 292), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var ok = new Button { Text = "Draft", DialogResult = DialogResult.OK, Size = new Size(90, 32), Location = new Point(362, 286), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Size = new Size(90, 32), Location = new Point(458, 286), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        f.Controls.AddRange(new Control[] { head, hint, box, tip, ok, cancel });
+        f.CancelButton = cancel;
+        f.KeyDown += (_, e) => { if (e.Control && e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; f.DialogResult = DialogResult.OK; f.Close(); } };
+        f.Shown += (_, _) => { f.Activate(); box.Focus(); };
+        return f.ShowDialog() == DialogResult.OK ? box.Text.Trim() : null;
     }
 
     static string? Prompt(string title, string label, string initial, string okText = "Check", int height = 120)
