@@ -118,13 +118,28 @@ static class OutlookOpener
     {
         dynamic item = itemObj;
         dynamic reply = all ? item.ReplyAll() : item.Reply();
-        reply.Display(); // shown first, so Outlook adds your reply signature
+        reply.Display(); // shown first, so Outlook adds your reply signature if you've set one for replies
         if (draft.Length > 0)
         {
+            const string font = "font-family:'Segoe UI',sans-serif;font-size:11pt";
             var html = string.Join("", draft.Replace("\r", "").Split("\n\n").Select(p =>
-                $"<p style=\"margin:0 0 12px 0\">{System.Net.WebUtility.HtmlEncode(p).Replace("\n", "<br>")}</p>"));
-            html = $"<div style=\"font-family:Calibri,Arial,sans-serif;font-size:11pt\">{html}</div>";
+                $"<p style=\"margin:0 0 12pt 0;{font}\"><span style=\"{font}\">{System.Net.WebUtility.HtmlEncode(p).Replace("\n", "<br>")}</span></p>"));
+            html = $"<div style=\"{font}\">{html}</div>";
             string body = (string)reply.HTMLBody;
+            // That mailbox's own signature, unless Outlook already put one in
+            if (!body.Contains("_MailAutoSig", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    string smtp = "", acct = "";
+                    try { dynamic a = reply.SendUsingAccount; smtp = (string)a.SmtpAddress ?? ""; acct = (string)a.DisplayName ?? ""; } catch { }
+                    if (smtp.Length == 0) { try { dynamic store = item.Parent.Store; acct = (string)store.DisplayName ?? ""; smtp = acct; } catch { } }
+                    var sig = Signatures.HtmlFor((object)reply, smtp, acct);
+                    if (sig != null) html += $"<div>{sig}</div>";
+                    else Log.Info($"No signature set for {smtp} {acct}");
+                }
+                catch (Exception ex) { Log.Error("Adding the signature", ex); }
+            }
             var m = Regex.Match(body, "<body[^>]*>", RegexOptions.IgnoreCase);
             reply.HTMLBody = m.Success ? body.Insert(m.Index + m.Length, html) : html + body;
         }
