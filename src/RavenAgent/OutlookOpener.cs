@@ -190,10 +190,7 @@ static class OutlookOpener
             // It starts with your name ("Raven"): don't sign the draft twice
             draft = Signatures.DropRepeatedName(draft, sigText);
 
-            const string font = "font-family:'Segoe UI',sans-serif;font-size:11pt";
-            var html = string.Join("", draft.Replace("\r", "").Split("\n\n").Select(p =>
-                $"<p style=\"margin:0 0 12pt 0;{font}\"><span style=\"{font}\">{System.Net.WebUtility.HtmlEncode(p).Replace("\n", "<br>")}</span></p>"));
-            html = $"<div style=\"{font}\">{html}</div>";
+            var html = DraftHtml(draft);
             var bodyTag = Regex.Match(body, "<body[^>]*>", RegexOptions.IgnoreCase);
             var start = bodyTag.Success ? bodyTag.Index + bodyTag.Length : 0;
             var (cut, reopen) = OriginalStart(body, start);
@@ -211,6 +208,38 @@ static class OutlookOpener
         }
         BringToFront((object)reply);
         Log.Info($"Reply opened in Outlook (draft {(draft.Length > 0 ? "added" : "missing")})");
+    }
+
+    const string Font = "font-family:'Segoe UI',sans-serif;font-size:11.0pt";
+
+    /// <summary>
+    /// The draft as Outlook paragraphs: Segoe UI 11, single spacing, 0 pt before/after, a blank line where the draft
+    /// has one (easy to edit), and real numbered / bulleted lists for lines starting "1. " / "- ".
+    /// </summary>
+    internal static string DraftHtml(string draft)
+    {
+        var sb = new System.Text.StringBuilder($"<div style=\"{Font}\">");
+        string? list = null; // "ol" or "ul" while inside a list
+        void Close() { if (list != null) { sb.Append($"</{list}>"); list = null; } }
+        string P(string inner) => $"<p class=MsoNormal style=\"margin:0in;line-height:normal\"><span style=\"{Font}\">{inner}</span></p>";
+        foreach (var raw in draft.Replace("\r", "").TrimEnd().Split('\n'))
+        {
+            var line = raw.TrimEnd();
+            var num = Regex.Match(line, @"^\s*\d{1,2}[.)]\s+(.*)$");
+            var bul = Regex.Match(line, @"^\s*[-*•]\s+(.*)$");
+            if (num.Success || bul.Success)
+            {
+                var kind = num.Success ? "ol" : "ul";
+                if (list != kind) { Close(); sb.Append($"<{kind} style=\"margin-top:0in;margin-bottom:0in\">"); list = kind; }
+                var text = System.Net.WebUtility.HtmlEncode((num.Success ? num : bul).Groups[1].Value);
+                sb.Append($"<li class=MsoNormal style=\"margin:0in;line-height:normal\"><span style=\"{Font}\">{text}</span></li>");
+                continue;
+            }
+            Close();
+            sb.Append(line.Trim().Length == 0 ? P("&nbsp;") : P(System.Net.WebUtility.HtmlEncode(line)));
+        }
+        Close();
+        return sb.Append("</div>").ToString();
     }
 
     /// <summary>

@@ -540,6 +540,14 @@ sealed class TrayApp : ApplicationContext
                 return;
             }
             OutlookOpener.OpenReply(item!, draft, all: how == "all", forwardTo: how == "forward" ? forwardTo : null);
+            // What Raven looked up online first (tax rates, rules...), with sources, to confirm before sending
+            try
+            {
+                using var doc2 = System.Text.Json.JsonDocument.Parse(res.Message);
+                if (doc2.RootElement.TryGetProperty("checks", out var ch) && ch.ValueKind == System.Text.Json.JsonValueKind.Array && ch.GetArrayLength() > 0)
+                    ShowChecks(ch);
+            }
+            catch (Exception ex) { Log.Error("Showing checks", ex); }
             if (draft.Contains("[[")) _tray.ShowBalloonTip(5000, "Raven", "Draft ready. Fill in the [[blanks]] before you send.", ToolTipIcon.Info);
         }
         catch (Exception ex) { Log.Error("Draft reply", ex); _tray.ShowBalloonTip(8000, "Raven couldn't draft that reply", ex.Message.Length > 150 ? ex.Message[..150] : ex.Message, ToolTipIcon.Warning); }
@@ -601,6 +609,33 @@ sealed class TrayApp : ApplicationContext
         f.Shown += (_, _) => { f.Activate(); box.Focus(); };
         if (f.ShowDialog() != DialogResult.OK) return null;
         return (box.Text.Trim(), forward.Checked ? "forward" : reply.Checked ? "reply" : "all", forward.Checked ? to.Text.Trim() : "");
+    }
+
+    /// <summary>A small window listing what Raven checked online (question, answer, sources). Stays until closed.</summary>
+    static void ShowChecks(System.Text.Json.JsonElement checks)
+    {
+        var f = new Form { Text = "Raven checked these before drafting", StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(560, 300),
+            TopMost = true, Font = new Font("Segoe UI", 10f), MinimizeBox = false, MaximizeBox = false };
+        var box = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = true, BackColor = Color.White };
+        foreach (var c in checks.EnumerateArray())
+        {
+            string S(string k) => c.TryGetProperty(k, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString() ?? "" : "";
+            box.SelectionFont = new Font("Segoe UI", 10f, FontStyle.Bold);
+            box.AppendText(S("question") + "\n");
+            box.SelectionFont = new Font("Segoe UI", 10f);
+            box.AppendText(S("answer"));
+            if (c.TryGetProperty("ravens_claim_ok", out var ok) && ok.ValueKind == System.Text.Json.JsonValueKind.False) box.AppendText("  (differs from what you said)");
+            if (S("confidence") == "low") box.AppendText("  (not sure - please verify)");
+            box.AppendText("\n");
+            if (c.TryGetProperty("sources", out var src) && src.ValueKind == System.Text.Json.JsonValueKind.Array)
+                foreach (var u in src.EnumerateArray().Take(3)) box.AppendText(u.GetString() + "\n");
+            box.AppendText("\n");
+        }
+        box.LinkClicked += (_, e) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.LinkText!) { UseShellExecute = true }); } catch { } };
+        f.Controls.Add(box);
+        f.Padding = new Padding(12);
+        f.FormClosed += (_, _) => f.Dispose();
+        f.Show();
     }
 
     static string? Prompt(string title, string label, string initial, string okText = "Check", int height = 120)
