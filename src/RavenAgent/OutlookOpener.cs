@@ -68,6 +68,11 @@ static class OutlookOpener
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+            if (new Uri(url).Host.Equals("followup", StringComparison.OrdinalIgnoreCase))
+            {
+                FollowUp((object)item, q["task"]);
+                return;
+            }
             if (new Uri(url).Host.Equals("reply", StringComparison.OrdinalIgnoreCase))
             {
                 Reply((object)item, q["draft"], q["all"] == "1");
@@ -111,6 +116,45 @@ static class OutlookOpener
         }
         if (draft.Length == 0) MessageBox.Show("Raven couldn't fetch the draft, so the reply is empty. Use Copy in the app and paste it in.", "Raven");
         OpenReply(itemObj, draft, all);
+    }
+
+    /// <summary>A status follow-up for a task you're waiting on: Raven drafts it, it opens as Reply All in that thread.</summary>
+    static void FollowUp(object itemObj, string? taskId)
+    {
+        var cfg = AgentConfig.Load();
+        if (!cfg.IsConfigured || string.IsNullOrWhiteSpace(taskId)) { MessageBox.Show("Raven isn't set up on this PC yet.", "Raven"); return; }
+        string draft = "", error = "";
+        using (var wait = new Form { Text = "Raven", Size = new System.Drawing.Size(360, 110), StartPosition = FormStartPosition.CenterScreen, TopMost = true,
+            FormBorderStyle = FormBorderStyle.FixedDialog, ControlBox = false, Font = new System.Drawing.Font("Segoe UI", 10f) })
+        {
+            wait.Controls.Add(new Label { Text = "Drafting your follow-up… (about 20 seconds)", AutoSize = true, Location = new System.Drawing.Point(16, 24) });
+            wait.Shown += async (_, _) =>
+            {
+                try
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(180) };
+                    using var req = new HttpRequestMessage(HttpMethod.Post, cfg.IngestUrl)
+                    {
+                        Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { followup_for = taskId, device_id = cfg.DeviceId }),
+                            System.Text.Encoding.UTF8, "application/json"),
+                    };
+                    req.Headers.Add("x-agent-key", cfg.AgentKey);
+                    var res = await http.SendAsync(req);
+                    using var doc = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+                    if (doc.RootElement.TryGetProperty("draft", out var d)) draft = d.GetString() ?? "";
+                    if (doc.RootElement.TryGetProperty("error", out var e)) error = e.GetString() ?? "";
+                }
+                catch (Exception ex) { error = ex.Message; Log.Error("Follow-up draft", ex); }
+                wait.Close();
+            };
+            wait.ShowDialog();
+        }
+        if (draft.Length == 0)
+        {
+            MessageBox.Show($"Raven couldn't draft the follow-up{(error.Length > 0 ? $": {error}" : ".")}", "Raven", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        OpenReply(itemObj, draft, all: true);
     }
 
     /// <summary>Outlook's Reply (All) window for the email, with the draft above your signature and the original.</summary>
