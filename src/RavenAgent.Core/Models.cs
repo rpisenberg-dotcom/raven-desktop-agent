@@ -149,6 +149,9 @@ public sealed record DraftRequest
     public string? Body { get; init; }
     public string? ReceivedAt { get; init; }
     public string? Guidance { get; init; }
+    /// <summary>"reply" or "forward".</summary>
+    public string? Mode { get; init; }
+    public string? ForwardTo { get; init; }
 }
 
 public sealed record LiveTranscriptRecord

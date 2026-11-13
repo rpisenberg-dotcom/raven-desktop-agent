@@ -114,10 +114,21 @@ static class OutlookOpener
     }
 
     /// <summary>Outlook's Reply (All) window for the email, with the draft above your signature and the original.</summary>
-    internal static void OpenReply(object itemObj, string draft, bool all)
+    internal static void OpenReply(object itemObj, string draft, bool all, string? forwardTo = null)
     {
         dynamic item = itemObj;
-        dynamic reply = all ? item.ReplyAll() : item.Reply();
+        // Forward keeps the attachments; the people you named are filled in (Outlook checks them against your contacts)
+        dynamic reply = forwardTo != null ? item.Forward() : all ? item.ReplyAll() : item.Reply();
+        if (!string.IsNullOrWhiteSpace(forwardTo))
+        {
+            try
+            {
+                foreach (var who in forwardTo.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    reply.Recipients.Add(who);
+                reply.Recipients.ResolveAll();
+            }
+            catch (Exception ex) { Log.Error("Forward recipients", ex); }
+        }
         // Replies to plain-text emails start as plain text, which loses your formatted signature: make it HTML first,
         // so Outlook puts in the formatted signature (with pictures) when it opens
         try { if ((int)reply.BodyFormat != 2) reply.BodyFormat = 2; } catch { }

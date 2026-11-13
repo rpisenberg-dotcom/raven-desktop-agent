@@ -79,7 +79,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(_pauseItem);
         menu.Items.Add("Jot a note (Ctrl+Alt+N)", null, (_, _) => ShowQuickNote());
         menu.Items.Add("Screenshot for this meeting (Ctrl+Alt+S)", null, (_, _) => TakeSnap());
-        menu.Items.Add("Draft a reply to the selected email (Ctrl+Alt+R)", null, (_, _) => _ = DraftReplyAsync());
+        menu.Items.Add("Draft a reply or forward for the selected email (Ctrl+Alt+R)", null, (_, _) => _ = DraftReplyAsync());
         menu.Items.Add("Sync now", null, async (_, _) => { await ReadOutlookAsync(); await UploadAsync(); });
         menu.Items.Add("Settings...", null, (_, _) => ShowSettings());
         menu.Items.Add("Open log folder", null, (_, _) => OpenFolder(Log.Folder));
@@ -514,15 +514,16 @@ sealed class TrayApp : ApplicationContext
         catch (Exception ex) { Log.Error("Reading the selected email", ex); _tray.ShowBalloonTip(3000, "Raven", "Couldn't read the selected email.", ToolTipIcon.Warning); return; }
 
         var subject = req.Subject ?? "";
-        var guidance = AskGuidance(subject, req.FromName ?? req.FromEmail ?? "");
-        if (guidance == null) return; // cancelled
+        var ask = AskGuidance(subject, req.FromName ?? req.FromEmail ?? "");
+        if (ask == null) return; // cancelled
+        var (guidance, how, forwardTo) = ask.Value;
         _drafting = true;
         _tray.ShowBalloonTip(4000, "Raven", "Drafting your reply… (about 20 seconds)", ToolTipIcon.Info);
         try
         {
             var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, new IngestPayload
             {
-                DeviceId = _cfg.DeviceId, AgentVersion = Version, PollOnly = true, DraftRequest = req with { Guidance = guidance },
+                DeviceId = _cfg.DeviceId, AgentVersion = Version, PollOnly = true, DraftRequest = req with { Guidance = guidance, Mode = how == "forward" ? "forward" : "reply", ForwardTo = forwardTo },
             }, slow: true);
             string draft = "", error = res.Ok ? "" : res.Message;
             if (res.Ok)
@@ -538,47 +539,68 @@ sealed class TrayApp : ApplicationContext
                 _tray.ShowBalloonTip(8000, "Raven couldn't draft that reply", why, ToolTipIcon.Warning);
                 return;
             }
-            OutlookOpener.OpenReply(item!, draft, all: true);
+            OutlookOpener.OpenReply(item!, draft, all: how == "all", forwardTo: how == "forward" ? forwardTo : null);
             if (draft.Contains("[[")) _tray.ShowBalloonTip(5000, "Raven", "Draft ready. Fill in the [[blanks]] before you send.", ToolTipIcon.Info);
         }
         catch (Exception ex) { Log.Error("Draft reply", ex); _tray.ShowBalloonTip(8000, "Raven couldn't draft that reply", ex.Message.Length > 150 ? ex.Message[..150] : ex.Message, ToolTipIcon.Warning); }
         finally { _drafting = false; }
     }
 
-    /// <summary>A roomy box for telling Raven what the reply should say. Enter = new line, Ctrl+Enter = Draft. Null if cancelled.</summary>
-    static string? AskGuidance(string subject, string from)
+    /// <summary>
+    /// A roomy box for telling Raven what to write, plus Reply all / Reply / Forward (with who to forward to).
+    /// Enter = new line, Ctrl+Enter = Draft. Null if cancelled.
+    /// </summary>
+    static (string guidance, string how, string forwardTo)? AskGuidance(string subject, string from)
     {
         using var f = new Form
         {
-            Text = "Draft a reply with Raven", StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(560, 330),
-            MinimumSize = new Size(420, 280), MinimizeBox = false, MaximizeBox = false, TopMost = true, Font = new Font("Segoe UI", 10f),
+            Text = "Draft with Raven", StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(560, 380),
+            MinimumSize = new Size(440, 330), MinimizeBox = false, MaximizeBox = false, TopMost = true, Font = new Font("Segoe UI", 10f),
             KeyPreview = true,
         };
         var head = new Label
         {
-            Text = $"Reply to {(from.Length > 40 ? from[..40] + "…" : from)}: {(subject.Length > 60 ? subject[..60] + "…" : subject)}",
+            Text = $"{(from.Length > 40 ? from[..40] + "…" : from)}: {(subject.Length > 60 ? subject[..60] + "…" : subject)}",
             AutoEllipsis = true, Location = new Point(12, 10), Size = new Size(536, 22), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             Font = new Font("Segoe UI", 10f, FontStyle.Bold),
         };
+        var replyAll = new RadioButton { Text = "Reply all", Checked = true, AutoSize = true, Location = new Point(12, 38) };
+        var reply = new RadioButton { Text = "Reply", AutoSize = true, Location = new Point(110, 38) };
+        var forward = new RadioButton { Text = "Forward to:", AutoSize = true, Location = new Point(190, 38) };
+        var to = new TextBox
+        {
+            Location = new Point(300, 36), Size = new Size(248, 26), Enabled = false, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            PlaceholderText = "name or email (optional)",
+        };
         var hint = new Label
         {
-            Text = "What should the reply say? Points to make, answers, tone, what to attach or promise. Leave empty to let Raven decide from what she knows.",
-            Location = new Point(12, 34), Size = new Size(536, 40), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, ForeColor = Color.DimGray,
+            Text = "What should it say? Points to make, answers, tone, what you need. Leave empty to let Raven decide from what she knows.",
+            Location = new Point(12, 70), Size = new Size(536, 40), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, ForeColor = Color.DimGray,
         };
         var box = new TextBox
         {
             Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = true,
-            Location = new Point(12, 78), Size = new Size(536, 196), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-            PlaceholderText = "e.g. Thank Darin. I'll sign the BBV acceptance block today and send it back once White Dog signs. Ask him to confirm the transfer date.",
+            Location = new Point(12, 114), Size = new Size(536, 210), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+            PlaceholderText = "e.g. Thank Darin. I'll sign the BBV acceptance block today and send it back once White Dog signs.",
         };
-        var tip = new Label { Text = "Ctrl+Enter to draft", AutoSize = true, ForeColor = Color.Gray, Location = new Point(12, 292), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-        var ok = new Button { Text = "Draft", DialogResult = DialogResult.OK, Size = new Size(90, 32), Location = new Point(362, 286), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Size = new Size(90, 32), Location = new Point(458, 286), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
-        f.Controls.AddRange(new Control[] { head, hint, box, tip, ok, cancel });
+        void Mode()
+        {
+            to.Enabled = forward.Checked;
+            box.PlaceholderText = forward.Checked
+                ? "e.g. Josh, see Darin's signed one pager below. Can you sign the BBV block by Monday?"
+                : "e.g. Thank Darin. I'll sign the BBV acceptance block today and send it back once White Dog signs.";
+            if (forward.Checked) to.Focus();
+        }
+        forward.CheckedChanged += (_, _) => Mode();
+        var tip = new Label { Text = "Ctrl+Enter to draft", AutoSize = true, ForeColor = Color.Gray, Location = new Point(12, 342), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var ok = new Button { Text = "Draft", DialogResult = DialogResult.OK, Size = new Size(90, 32), Location = new Point(362, 336), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Size = new Size(90, 32), Location = new Point(458, 336), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        f.Controls.AddRange(new Control[] { head, replyAll, reply, forward, to, hint, box, tip, ok, cancel });
         f.CancelButton = cancel;
         f.KeyDown += (_, e) => { if (e.Control && e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; f.DialogResult = DialogResult.OK; f.Close(); } };
         f.Shown += (_, _) => { f.Activate(); box.Focus(); };
-        return f.ShowDialog() == DialogResult.OK ? box.Text.Trim() : null;
+        if (f.ShowDialog() != DialogResult.OK) return null;
+        return (box.Text.Trim(), forward.Checked ? "forward" : reply.Checked ? "reply" : "all", forward.Checked ? to.Text.Trim() : "");
     }
 
     static string? Prompt(string title, string label, string initial, string okText = "Check", int height = 120)
