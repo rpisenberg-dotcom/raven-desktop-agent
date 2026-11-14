@@ -378,13 +378,14 @@ sealed class OutlookReader
                 dynamic a = atts.Item(i);
                 string name = SafeString(() => (string)a.FileName) ?? "";
                 if (name.Length == 0) continue;
-                bool hidden = false;
-                try { hidden = (bool)a.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"); } catch { }
-                string cid = "";
-                try { cid = (string)a.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F") ?? ""; } catch { }
+                // Signature pictures ("image001.png") and other small inline images are left out. Only plain item
+                // properties are read here (no PropertyAccessor), so Outlook's security prompt isn't triggered.
+                int size = 0;
+                try { size = (int)a.Size; } catch { }
+                bool picture = System.Text.RegularExpressions.Regex.IsMatch(name, @"\.(png|jpe?g|gif|bmp)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 bool sigPicture = System.Text.RegularExpressions.Regex.IsMatch(name, @"^image\d{3}\.(png|jpe?g|gif)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                    || (cid.Length > 0 && System.Text.RegularExpressions.Regex.IsMatch(name, @"\.(png|jpe?g|gif|bmp)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
-                if (!hidden && !sigPicture) names.Add(name);
+                    || (picture && size > 0 && size < 40_000);
+                if (!sigPicture) names.Add(name);
             }
             return names.Count > 0 ? names : null;
         }
