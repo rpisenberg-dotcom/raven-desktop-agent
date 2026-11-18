@@ -76,7 +76,7 @@ sealed class OutlookReader
                     {
                         seenCalendars.Add(SafeString(() => (string)((dynamic)calObj).EntryID) ?? calName);
                         if (_cfg.HiddenCalendars.Contains(calName, StringComparer.OrdinalIgnoreCase)) continue; // Hidden in Clerical Guru
-                        var ids = ReadCalendar(calObj, calName, calStart, calEnd, events);
+                        var ids = ReadCalendar(calObj, calName, calStart, calEnd, events, fullCalendar);
                         if (ids != null)
                             syncs.Add(new CalendarSync
                             {
@@ -98,12 +98,13 @@ sealed class OutlookReader
 
             // Calendars added in Outlook's Calendar view (Shared Calendars, other people's, other accounts'), which
             // don't live in any mailbox's folder list
-            foreach (var (calObj, calName) in NavigationCalendars((object)ns, seenCalendars))
+            // These are often other people's calendars over the network (slow for Outlook): read on the hourly full read only
+            foreach (var (calObj, calName) in fullCalendar ? NavigationCalendars((object)ns, seenCalendars) : Enumerable.Empty<(object, string)>())
             {
                 if (_cfg.HiddenCalendars.Contains(calName, StringComparer.OrdinalIgnoreCase)) continue; // Hidden in Clerical Guru
                 try
                 {
-                    var ids = ReadCalendar(calObj, calName, calStart, calEnd, events);
+                    var ids = ReadCalendar(calObj, calName, calStart, calEnd, events, fullCalendar);
                     if (ids != null)
                         syncs.Add(new CalendarSync
                         {
@@ -116,7 +117,7 @@ sealed class OutlookReader
                 catch (Exception ex) { WarnOnce(calName, ex); }
             }
 
-            Status = $"Read {mailboxes} mailboxes at {DateTime.Now:t}: {emails.Count} new emails, {events.Count} calendar items"
+            Status = $"Read {mailboxes} mailboxes at {DateTime.Now:t} ({(fullCalendar ? "full" : "quick")}, {(DateTime.UtcNow - started).TotalSeconds:0}s): {emails.Count} new emails, {events.Count} calendar items"
                      + (skipped.Count > 0 ? $" ({skipped.Count} unavailable skipped)" : "");
             // Nearest dates first: if an upload is ever cut short, it's far-off meetings that wait, not tomorrow's
             try
@@ -160,7 +161,27 @@ sealed class OutlookReader
         var m = JoinRe.Match(location + " " + text);
         return m.Success ? m.Value.TrimEnd('>', ')', '.', ',') : null;
     }
-    int _calls;
+    static int _calls;
+
+    /// <summary>
+    /// Every request to Outlook runs on the same thread that draws Outlook's screen, so a long read makes
+    /// clicks and scrolling wait. Between requests: a short pause now and then, and a full stop while Raven
+    /// is clicking or typing in Outlook (the read carries on once she pauses for a few seconds).
+    /// </summary>
+    static void Breathe()
+    {
+        _calls++;
+        if (_calls % 15 == 0) Thread.Sleep(30);
+        if (_calls % 3 != 0) return;
+        for (int waited = 0; UserInOutlook() && waited < 900_000; waited += 400) Thread.Sleep(400);
+    }
+
+    static bool UserInOutlook()
+    {
+        if (Native.IdleTime() >= TimeSpan.FromSeconds(4)) return false;
+        var (_, process, _) = Native.ForegroundWindow();
+        return process.Equals("OUTLOOK", StringComparison.OrdinalIgnoreCase);
+    }
     void WarnOnce(string storeName, Exception ex)
     {
         if (_warned.Add(storeName)) Log.Error($"Skipping mailbox '{storeName}' (unavailable)", ex);
@@ -324,7 +345,7 @@ sealed class OutlookReader
                 try
                 {
                     if ((int)item!.Class != olMail) continue;
-                    if (++_calls % 25 == 0) Thread.Sleep(15);
+                    Breathe();
                     EmailRecord? rec = ToEmail((object)item, storeName, folderPath, direction);
                     if (rec != null) { into.Add(rec); n++; }
                 }
@@ -418,8 +439,10 @@ sealed class OutlookReader
             int count = recips.Count;
             for (int i = 1; i <= count && i <= 50; i++)
             {
+                Breathe();
                 dynamic r = recips.Item(i);
-                string? addr = SafeString(() => (string)r.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS)) ?? SafeString(() => (string)r.Address);
+                string? addr = SafeString(() => (string)r.Address);
+                if (addr == null || !addr.Contains('@')) addr = SafeString(() => (string)r.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS)) ?? addr;
                 if (string.IsNullOrWhiteSpace(addr)) continue;
                 int type = (int)r.Type; // 1 = To / required, 2 = CC / optional
                 (type == 2 ? cc : to).Add(addr!);
@@ -430,7 +453,7 @@ sealed class OutlookReader
     }
 
     /// <summary>Returns the IDs of all events seen in the window, or null if the calendar couldn't be read.</summary>
-    List<string>? ReadCalendar(object folderObj, string storeName, DateTime startLocal, DateTime endLocal, List<CalendarRecord> into)
+    List<string>? ReadCalendar(object folderObj, string storeName, DateTime startLocal, DateTime endLocal, List<CalendarRecord> into, bool checkSeries = true)
     {
         dynamic folder = folderObj;
         var ids = new List<string>();
@@ -456,7 +479,7 @@ sealed class OutlookReader
                 _attendees[key] = people;
             }
             var (req, opt, join) = people;
-            if (++_calls % 25 == 0) Thread.Sleep(15); // let Outlook handle clicks and typing between reads
+            Breathe(); // let Outlook handle clicks and typing between reads
 
             into.Add(new CalendarRecord
             {
@@ -521,7 +544,8 @@ sealed class OutlookReader
         // Only for the next two weeks, to keep it light on Outlook (the main read covers the rest).
         var bStart = startLocal > DateTime.Today.AddDays(-1) ? startLocal : DateTime.Today.AddDays(-1);
         var bEnd = endLocal < DateTime.Today.AddDays(15) ? endLocal : DateTime.Today.AddDays(15);
-        if (bEnd > bStart)
+        // Asking every series about every day is thousands of requests, so only on the hourly full read
+        if (checkSeries && bEnd > bStart)
             try { AddSeriesOccurrences(folderObj, bStart, bEnd, new Action<dynamic, DateTime, DateTime>(Add)); }
             catch (Exception ex) { WarnOnce($"{storeName} (repeating meetings)", ex); }
         return ids;
@@ -751,10 +775,11 @@ sealed class OutlookReader
         dynamic all = folder.Items;
         dynamic masters = all.Restrict("[IsRecurring] = True");
         int checkedSeries = 0;
-        for (dynamic? m = masters.GetFirst(); m != null && checkedSeries < 300; m = masters.GetNext())
+        for (dynamic? m = masters.GetFirst(); m != null && checkedSeries < 150; m = masters.GetNext())
         {
             try
             {
+                Breathe();
                 if ((int)m!.Class != olAppointment || SafeInt(() => (int)m.RecurrenceState) != olApptMaster) continue;
                 checkedSeries++;
                 dynamic pattern = m.GetRecurrencePattern();
@@ -775,6 +800,7 @@ sealed class OutlookReader
                         _ => false,
                     };
                     if (!candidate) continue;
+                    Breathe();
                     try
                     {
                         dynamic occ = pattern.GetOccurrence(day + at); // throws when the series doesn't meet that day

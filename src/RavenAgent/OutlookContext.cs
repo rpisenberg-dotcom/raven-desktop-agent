@@ -10,11 +10,12 @@ sealed class OutlookContext
 {
     const int olMail = 43, olAppointment = 26, olMeetingRequest = 53;
     const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-    static readonly TimeSpan Every = TimeSpan.FromSeconds(10);
+    static readonly TimeSpan Every = TimeSpan.FromSeconds(15);
 
     readonly ClientDirectory _clients;
     DateTime _lastRead = DateTime.MinValue;
     (string? detail, ClientMatch? match) _last;
+    string? _lastId;
     object? _app;
 
     public OutlookContext(ClientDirectory clients) => _clients = clients;
@@ -24,6 +25,8 @@ sealed class OutlookContext
     public (string? detail, ClientMatch? match) Get()
     {
         if (DateTime.UtcNow - _lastRead < Every) return _last;
+        // Mid-click or mid-scroll: don't make Outlook answer questions right now
+        if (Native.IdleTime() < TimeSpan.FromSeconds(1.5)) return _last;
         _lastRead = DateTime.UtcNow;
         try { _last = Read(); }
         catch (Exception ex)
@@ -62,7 +65,13 @@ sealed class OutlookContext
             }
         }
         if (itemObj == null) return (null, null);
-        return Describe(itemObj);
+        // Same email as last time: nothing new to look up (saves Outlook a dozen requests every few seconds)
+        string? id = null;
+        try { id = (string)((dynamic)itemObj).EntryID; } catch { }
+        if (id != null && id == _lastId) return _last;
+        var r = Describe(itemObj);
+        _lastId = id;
+        return r;
     }
 
     (string?, ClientMatch?) Describe(object itemObj)
@@ -85,10 +94,12 @@ sealed class OutlookContext
         {
             dynamic recips = item.Recipients;
             int n = (int)recips.Count;
-            for (int i = 1; i <= n && i <= 30; i++)
+            for (int i = 1; i <= n && i <= 15; i++)
             {
                 dynamic r = recips.Item(i);
-                people.Add(Safe(() => (string)r.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS)) ?? Safe(() => (string)r.Address));
+                var addr = Safe(() => (string)r.Address);
+                if (addr == null || !addr.Contains('@')) addr = Safe(() => (string)r.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS)) ?? addr;
+                people.Add(addr);
             }
         }
         catch { }
