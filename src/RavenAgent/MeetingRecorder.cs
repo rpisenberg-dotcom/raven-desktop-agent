@@ -54,6 +54,9 @@ sealed class MeetingRecorder
 
     public bool HasSound => _mine != null || _theirs != null;
 
+    /// <summary>Last time anyone could be heard: the meeting's sound or Raven's microphone.</summary>
+    public DateTime LastSoundUtc => new[] { _mine?.LastSoundUtc ?? DateTime.MinValue, _theirs?.LastSoundUtc ?? DateTime.MinValue }.Max();
+
     /// <summary>Changes what the video shows (meeting window / a screen / none). Runs ffmpeg; call off the UI thread.</summary>
     public void SwitchVideo(VideoSource v)
     {
@@ -138,6 +141,7 @@ sealed class MeetingRecorder
         readonly object _lock = new();
         long _written;
         bool _stopped;
+        public DateTime LastSoundUtc { get; private set; } = DateTime.UtcNow;
 
         AudioTrack(IWaveIn capture, string path, Stopwatch clock)
         {
@@ -183,7 +187,24 @@ sealed class MeetingRecorder
                 if (gap > f.AverageBytesPerSecond / 5) Pad(gap - gap % f.BlockAlign);
                 _writer.Write(a.Buffer, 0, a.BytesRecorded);
                 _written += a.BytesRecorded;
+                if (Loud(a.Buffer, a.BytesRecorded, f)) LastSoundUtc = DateTime.UtcNow;
             }
+        }
+
+        /// <summary>Anything above a whisper (about -45 dB) in this piece of sound.</summary>
+        static bool Loud(byte[] buf, int n, WaveFormat f)
+        {
+            if (f.Encoding == WaveFormatEncoding.IeeeFloat || (f.Encoding == WaveFormatEncoding.Extensible && f.BitsPerSample == 32))
+            {
+                for (var i = 0; i + 4 <= n; i += 16) if (Math.Abs(BitConverter.ToSingle(buf, i)) > 0.006f) return true;
+                return false;
+            }
+            if (f.BitsPerSample == 16)
+            {
+                for (var i = 0; i + 2 <= n; i += 8) if (Math.Abs((int)BitConverter.ToInt16(buf, i)) > 200) return true;
+                return false;
+            }
+            return true; // unknown format: assume sound, so a meeting is never cut short
         }
 
         void Pad(long n)

@@ -204,11 +204,23 @@ sealed class TrayApp : ApplicationContext
             else if (_inCall)
             {
                 _callGoneSince ??= DateTime.UtcNow;
-                if (DateTime.UtcNow - _callGoneSince > TimeSpan.FromSeconds(45))
+                if (DateTime.UtcNow - _callGoneSince > TimeSpan.FromSeconds(45) && _rec == null)
                 {
                     _inCall = false;
                     _recPrompt?.Close();
-                    if (_rec != null) { Log.Info("Call ended: stopping the recording"); _ = StopRecordingAsync(); }
+                }
+            }
+            // While recording, the meeting is only over when its window has been gone for 2 minutes AND nobody has
+            // been heard for 3 (the window can vanish from view mid-meeting, e.g. right after screen sharing)
+            if (_rec != null && call == null)
+            {
+                var windowGone = DateTime.UtcNow - _captions.LastMeetingWindowUtc;
+                var quiet = DateTime.UtcNow - _rec.LastSoundUtc;
+                if (windowGone > TimeSpan.FromMinutes(2) && quiet > TimeSpan.FromMinutes(3))
+                {
+                    Log.Info($"Call ended (no meeting window for {windowGone.TotalMinutes:0} min, quiet for {quiet.TotalMinutes:0} min): stopping the recording");
+                    _inCall = false;
+                    _ = StopRecordingAsync();
                 }
             }
             _recStartItem.Enabled = _rec == null;
@@ -315,7 +327,7 @@ sealed class TrayApp : ApplicationContext
     void FollowScreenShare()
     {
         var rec = _rec;
-        if (rec == null || _recBar == null || _userPickedVideo) return;
+        if (rec == null || _recBar == null || _userPickedVideo || DateTime.UtcNow < _switchingUntil) return;
         if (_captions.Sharing && rec.Video.Kind == "window")
         {
             var screen = SharedScreen(rec);
@@ -334,8 +346,11 @@ sealed class TrayApp : ApplicationContext
         }
     }
 
+    DateTime _switchingUntil;
+
     void SwitchVideoTo(MeetingRecorder rec, MeetingRecorder.VideoSource s)
     {
+        _switchingUntil = DateTime.UtcNow.AddSeconds(15); // a switch takes a few seconds: don't start another meanwhile
         _recBar?.ShowSource(s);
         _ = Task.Run(() =>
         {
