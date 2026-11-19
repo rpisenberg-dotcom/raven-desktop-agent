@@ -12,11 +12,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $ProgressPreference = 'SilentlyContinue'
-          $rels = gh api "repos/ggml-org/whisper.cpp/releases?per_page=40" | ConvertFrom-Json
-          foreach ($r in $rels) { "REL $($r.tag_name) $($r.published_at) assets=$($r.assets.Count)"; $r.assets | Where-Object { $_.name -match 'win|x64' } | ForEach-Object { "   $($_.name)  $($_.size)" } }
-          $a = $null
-          foreach ($r in $rels) { $a = $r.assets | Where-Object { $_.name -match 'x64' -and $_.name -match 'bin' -and $_.name -notmatch 'cuda|cublas|blas|vulkan|arm|openvino' } | Select-Object -First 1; if ($a) { "PICK $($r.tag_name) $($a.name) $($a.browser_download_url)"; break } }
-          Invoke-WebRequest $a.browser_download_url -OutFile wb.zip
+          Invoke-WebRequest https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip -OutFile wb.zip
           Expand-Archive wb.zip wb
           Get-ChildItem wb -Recurse | ForEach-Object { "$($_.FullName.Replace((Get-Location).Path,''))  $($_.Length)" }
           $cli = (Get-ChildItem wb -Recurse -Filter whisper-cli.exe | Select-Object -First 1).FullName
