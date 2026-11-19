@@ -7,31 +7,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Continue'
           $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -OutFile ff.zip
-          Expand-Archive ff.zip ff
-          $ff = (Get-ChildItem ff -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
-          "FFMPEG: $ff"; (Get-Item ff.zip).Length
-          & $ff -hide_banner -version | Select-Object -First 1
-          "--- gfx filters"; & $ff -hide_banner -filters 2>&1 | Select-String "gfx|ddagrab"
-          "--- gfx help"; & $ff -hide_banner -h filter=gfxcapture 2>&1 | Select-Object -First 15
-          "--- test gfx"; & $ff -hide_banner -y -filter_complex "gfxcapture=monitor_idx=0:max_framerate=5,hwdownload,format=bgra,format=yuv420p" -frames:v 5 t1.mp4 2>&1 | Select-Object -Last 6
-          "--- test gfx no hwdownload"; & $ff -hide_banner -y -filter_complex "gfxcapture=monitor_idx=0:max_framerate=5,format=yuv420p" -frames:v 5 t2.mp4 2>&1 | Select-Object -Last 6
-          "--- test ddagrab"; & $ff -hide_banner -y -filter_complex "ddagrab=output_idx=0:framerate=5,hwdownload,format=bgra,format=yuv420p" -frames:v 5 t3.mp4 2>&1 | Select-Object -Last 6
-          "--- whisper"
-          foreach ($n in 'whisper-bin-x64.zip','whisper-blas-bin-x64.zip') {
-            try { Invoke-WebRequest "https://github.com/ggml-org/whisper.cpp/releases/latest/download/$n" -OutFile $n; "GOT $n " + (Get-Item $n).Length } catch { "MISSING $n" }
-          }
-          Expand-Archive whisper-bin-x64.zip wb
-          Get-ChildItem wb -Recurse | Select-Object -ExpandProperty FullName
+          $rel = gh api repos/ggml-org/whisper.cpp/releases/latest | ConvertFrom-Json
+          "TAG $($rel.tag_name)"; $rel.assets | ForEach-Object { "$($_.name)  $($_.size)  $($_.browser_download_url)" }
+          $a = $rel.assets | Where-Object { $_.name -match 'x64' -and $_.name -match 'bin' -and $_.name -notmatch 'cuda|cublas|blas|vulkan|arm|openvino' } | Select-Object -First 1
+          "PICK $($a.name)"
+          Invoke-WebRequest $a.browser_download_url -OutFile wb.zip
+          Expand-Archive wb.zip wb
+          Get-ChildItem wb -Recurse | ForEach-Object { "$($_.FullName.Replace((Get-Location).Path,''))  $($_.Length)" }
           $cli = (Get-ChildItem wb -Recurse -Filter whisper-cli.exe | Select-Object -First 1).FullName
           Invoke-WebRequest https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin -OutFile base.bin
           Invoke-WebRequest https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav -OutFile jfk.wav
-          & $ff -hide_banner -y -i jfk.wav -ar 16000 -ac 1 -c:a pcm_s16le jfk16.wav 2>&1 | Select-Object -Last 1
           $sw=[Diagnostics.Stopwatch]::StartNew()
-          & $cli -m base.bin -f jfk16.wav -l en -oj -of out -np 2>&1 | Select-Object -Last 5
+          & $cli -m base.bin -f jfk.wav -l en -oj -of out -np -t 4 2>&1 | Select-Object -Last 5
           "SECONDS " + $sw.Elapsed.TotalSeconds
           Get-Content out.json -Raw
-          "--- help"; & $cli -h 2>&1 | Select-String "output-json|max-len|split-on-word|threads|-np|prompt|vad"
+          "--- help"; & $cli -h 2>&1 | Select-String "output-json|max-len|split-on-word|threads|no-prints|prompt|vad|offset|duration"
