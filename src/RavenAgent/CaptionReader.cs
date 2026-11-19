@@ -10,9 +10,9 @@ namespace RavenAgent;
 /// Teams live captions -> a running transcript of the meeting, so Raven can summarise it without a Microsoft connection.
 /// Works for Teams in a browser tab (Edge/Chrome, any account) and the Teams app, as long as Live captions are showing.
 ///
-/// Only while Teams says the meeting is being recorded or transcribed (everyone in the call has been told), so this
-/// never captures a conversation that isn't already being transcribed. Nothing is recorded: it copies the caption text
-/// Teams puts on screen.
+/// Only while Teams says the meeting is being recorded or transcribed, or while Raven is recording it herself after
+/// confirming everyone was told (<see cref="Consented"/>). It copies the caption text Teams puts on screen; the names
+/// in it are also used to label the speakers in Raven's own recordings.
 /// </summary>
 sealed class CaptionReader
 {
@@ -29,6 +29,10 @@ sealed class CaptionReader
 
     Session? _current;
     readonly List<Session> _finished = new();
+    readonly List<Session> _archive = new(); // sent, kept a few hours for naming speakers in recordings
+
+    /// <summary>Raven is recording this meeting herself (she confirmed everyone was told).</summary>
+    public volatile bool Consented;
     readonly object _lock = new();
 
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
@@ -52,7 +56,7 @@ sealed class CaptionReader
                 new PropertyCondition(AutomationElement.AutomationIdProperty, "recording-indicator-custom"),
                 new PropertyCondition(AutomationElement.AutomationIdProperty, "recording-indicator"),
                 new PropertyCondition(AutomationElement.AutomationIdProperty, "transcription-indicator")));
-            if (transcribing == null) return;
+            if (transcribing == null && !Consented) return;
             var panel = root.FindFirst(TreeScope.Descendants, new AndCondition(
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group),
                 new PropertyCondition(AutomationElement.NameProperty, "Live Captions")));
@@ -103,8 +107,18 @@ sealed class CaptionReader
                 var s = _current?.Key == r.MeetingKey ? _current : _finished.FirstOrDefault(f => f.Key == r.MeetingKey);
                 if (s != null) s.Sent = Math.Max(s.Sent, r.FromLine + r.Lines.Count);
             }
+            foreach (var f in _finished.Where(f => f.Sent >= f.Lines.Count)) _archive.Add(f);
             _finished.RemoveAll(f => f.Sent >= f.Lines.Count);
+            _archive.RemoveAll(a => DateTime.UtcNow - a.LastSeen > TimeSpan.FromHours(6));
         }
+    }
+
+    /// <summary>Every caption line seen since a time (for naming the speakers in a recording).</summary>
+    public List<Line> Snapshot(DateTime sinceUtc)
+    {
+        lock (_lock)
+            return _archive.Concat(_finished).Concat(_current != null ? new[] { _current } : Array.Empty<Session>())
+                .SelectMany(s => s.Lines).Where(l => l.At >= sinceUtc.AddMinutes(-1)).OrderBy(l => l.At).ToList();
     }
 
     void EndCurrent(TimeSpan grace)
@@ -164,7 +178,7 @@ sealed class CaptionReader
     }
 
     /// <summary>"Calendar | BBV Team Meeting (External) | Microsoft Teams and 1 more page - Work" -> "BBV Team Meeting".</summary>
-    static string MeetingTitle(string window)
+    public static string MeetingTitle(string window)
     {
         var parts = window.Split(" | ").Select(x => x.Trim()).ToList();
         var name = parts.FirstOrDefault(x => !x.StartsWith("Microsoft Teams") && x is not ("Calendar" or "Chat" or "Teams" or "Activity" or "Calls" or "Meeting") ) ?? "Teams meeting";
@@ -172,7 +186,7 @@ sealed class CaptionReader
         return name.Length > 200 ? name[..200] : name;
     }
 
-    static (IntPtr hwnd, string title)? FindMeetingWindow()
+    public static (IntPtr hwnd, string title)? FindMeetingWindow()
     {
         (IntPtr, string)? found = null;
         EnumWindows((h, _) =>

@@ -52,6 +52,19 @@ sealed class TrayApp : ApplicationContext
     readonly System.Threading.Timer _captionTimer;
     int _captionBusy;
     QuickNoteWindow? _noteWindow;
+    SynchronizationContext? _ui;
+    // Meeting recordings
+    readonly System.Windows.Forms.Timer _recTimer = new() { Interval = 4000 };
+    MeetingRecorder? _rec;
+    List<MeetingRecorder.VideoSource> _recSources = new();
+    RecordPrompt? _recPrompt;
+    RecordingBar? _recBar;
+    bool _inCall;
+    DateTime? _callGoneSince;
+    readonly ToolStripMenuItem _recStartItem = new("Record this meeting...");
+    readonly ToolStripMenuItem _recStopItem = new("Stop recording") { Enabled = false };
+    readonly ToolStripMenuItem _recOfferItem = new("Ask to record when a meeting starts") { CheckOnClick = true };
+    readonly ToolStripMenuItem _recStatusItem = new() { Enabled = false, Visible = false };
     DateTime _lastCalQueued = DateTime.MinValue;
     string _lastError = "";
 
@@ -72,6 +85,7 @@ sealed class TrayApp : ApplicationContext
         _startupItem.CheckedChanged += (_, _) => Startup.Set(_startupItem.Checked);
 
         var menu = new ContextMenuStrip();
+        _ui = SynchronizationContext.Current; // the Windows Forms one, installed with the first control
         menu.Items.Add(new ToolStripMenuItem($"Raven Desktop Agent {Version}") { Enabled = false, Font = new Font(menu.Font, FontStyle.Bold) });
         menu.Items.Add(_statusItem);
         menu.Items.Add(_outlookItem);
@@ -80,6 +94,19 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add("Jot a note (Ctrl+Alt+N)", null, (_, _) => ShowQuickNote());
         menu.Items.Add("Screenshot for this meeting (Ctrl+Alt+S)", null, (_, _) => TakeSnap());
         menu.Items.Add("Draft a reply or forward for the selected email (Ctrl+Alt+R)", null, (_, _) => _ = DraftReplyAsync());
+        var recMenu = new ToolStripMenuItem("Meeting recording");
+        _recStartItem.Click += (_, _) => ShowRecordPrompt(CallDetector.ActiveCall() ?? "Teams", manual: true);
+        _recStopItem.Click += (_, _) => _ = StopRecordingAsync();
+        _recOfferItem.Checked = _cfg.OfferRecording;
+        _recOfferItem.CheckedChanged += (_, _) => { _cfg.OfferRecording = _recOfferItem.Checked; _cfg.Save(); };
+        recMenu.DropDownItems.Add(_recStartItem);
+        recMenu.DropDownItems.Add(_recStopItem);
+        recMenu.DropDownItems.Add(_recStatusItem);
+        recMenu.DropDownItems.Add(new ToolStripSeparator());
+        recMenu.DropDownItems.Add(_recOfferItem);
+        recMenu.DropDownItems.Add("Open the recordings folder", null, (_, _) => { Directory.CreateDirectory(_cfg.RecordingsFolder); OpenFolder(_cfg.RecordingsFolder); });
+        recMenu.DropDownItems.Add("Change the recordings folder...", null, (_, _) => ChooseRecordingsFolder());
+        menu.Items.Add(recMenu);
         menu.Items.Add("Sync now", null, async (_, _) => { await ReadOutlookAsync(); await UploadAsync(); });
         menu.Items.Add("Settings...", null, (_, _) => ShowSettings());
         menu.Items.Add("Open log folder", null, (_, _) => OpenFolder(Log.Folder));
@@ -103,7 +130,7 @@ sealed class TrayApp : ApplicationContext
         _outlookTimer.Tick += async (_, _) => await ReadOutlookAsync();
         _outlookRetry.Tick += async (_, _) => { _outlookRetry.Stop(); await ReadOutlookAsync(); };
         // Calendar changes made in the app (new / edited / deleted events): checked every 90 seconds
-        _changesTimer.Tick += async (_, _) => { await SendSnapsAsync(); await SendCaptionsAsync(); await PollCalendarChangesAsync(); };
+        _changesTimer.Tick += async (_, _) => { await SendSnapsAsync(); await SendCaptionsAsync(); await SendPendingRecordingsAsync(); await PollCalendarChangesAsync(); };
         _changesTimer.Start();
         // Teams captions: a look every 8 seconds, only while a call is using the microphone (or a captured meeting is ending)
         _captionTimer = new System.Threading.Timer(_ =>
@@ -125,6 +152,11 @@ sealed class TrayApp : ApplicationContext
         _sampleTimer.Start();
         _uploadTimer.Start();
         _outlookTimer.Start();
+        _recTimer.Tick += (_, _) => RecordingTick();
+        _recTimer.Start();
+        // The free recording tools (about 400 MB) download once, a few minutes after start
+        if (_cfg.OfferRecording && !MeetingTools.Ready)
+            _ = Task.Run(async () => { await Task.Delay(TimeSpan.FromMinutes(3)); await MeetingTools.EnsureAsync(); });
 
         if (!_cfg.IsConfigured)
         {
@@ -141,11 +173,181 @@ sealed class TrayApp : ApplicationContext
         RefreshStatus();
     }
 
+    // ---------------- Meeting recordings ----------------
+
+    /// <summary>Every 4 seconds: offers to record when a call starts, stops the recording when it ends.</summary>
+    void RecordingTick()
+    {
+        try
+        {
+            if (_rec != null) _recBar?.Tick(_rec.Elapsed);
+            var call = _cfg.PrivateMode ? null : CallDetector.ActiveCall();
+            if (call != null)
+            {
+                _callGoneSince = null;
+                if (!_inCall)
+                {
+                    _inCall = true;
+                    // Phone calls are never offered automatically (they can still be recorded from the menu)
+                    if (_cfg.OfferRecording && _rec == null && call != "Phone Link") ShowRecordPrompt(call, manual: false);
+                }
+            }
+            else if (_inCall)
+            {
+                _callGoneSince ??= DateTime.UtcNow;
+                if (DateTime.UtcNow - _callGoneSince > TimeSpan.FromSeconds(45))
+                {
+                    _inCall = false;
+                    _recPrompt?.Close();
+                    if (_rec != null) { Log.Info("Call ended: stopping the recording"); _ = StopRecordingAsync(); }
+                }
+            }
+            _recStartItem.Enabled = _rec == null;
+            _recStopItem.Enabled = _rec != null;
+        }
+        catch (Exception ex) { Log.Error("Recording check", ex); }
+    }
+
+    void ShowRecordPrompt(string app, bool manual)
+    {
+        if (_rec != null || _cfg.PrivateMode) return;
+        if (_recPrompt != null && !_recPrompt.IsDisposed) { _recPrompt.Activate(); return; }
+        var meeting = MeetingWindows.Find(app);
+        var sources = MeetingWindows.Sources(meeting);
+        _recPrompt = new RecordPrompt(app, sources, _cfg.RecordVideo, _cfg.RecordingNotice, src => StartRecording(app, meeting, sources, src));
+        _recPrompt.FormClosed += (_, _) => _recPrompt = null;
+        _recPrompt.Show();
+        if (manual) _recPrompt.Activate();
+    }
+
+    void StartRecording(string app, (IntPtr hwnd, string title)? meeting, List<MeetingRecorder.VideoSource> sources, MeetingRecorder.VideoSource video)
+    {
+        try
+        {
+            _cfg.RecordVideo = video.Kind;
+            _cfg.Save();
+            var title = MeetingWindows.TitleFor(meeting, app);
+            Log.Info($"Recording started with notice confirmed: {title}");
+            _rec = MeetingRecorder.Start(_cfg.RecordingsFolder, title, app, video);
+            _recSources = sources;
+            _captions.Consented = true;
+            if (!_rec.HasSound)
+            {
+                _tray.ShowBalloonTip(6000, "Raven", "Raven couldn't reach your microphone or speakers, so nothing is being recorded. See the log for details.", ToolTipIcon.Warning);
+                _rec.Stop();
+                _rec = null;
+                _captions.Consented = false;
+                return;
+            }
+            var rec = _rec;
+            _recBar = new RecordingBar(sources, video, s => Task.Run(() =>
+            {
+                rec.SwitchVideo(s);
+                OnUi(() => _recBar?.ShowSource(rec.Video));
+            }), () => _ = StopRecordingAsync());
+            _recBar.Show();
+            _tray.Text = "Raven - recording this meeting";
+            if (video.Kind != "none" && !MeetingTools.HasFfmpeg)
+                _tray.ShowBalloonTip(6000, "Raven", "Recording sound now. The video recorder is still downloading; pick the video again from the Raven bar in a few minutes.", ToolTipIcon.Info);
+            if (video.Kind == "window" && meeting != null && MeetingWindows.IsMinimized(meeting.Value.hwnd))
+                _tray.ShowBalloonTip(6000, "Raven", "The meeting window is minimized, so there's no video of it. Restore it (behind other windows is fine).", ToolTipIcon.Info);
+            // If the chosen video can't be captured, the bar shows what's really being recorded
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(6000);
+                OnUi(() => { if (_rec == rec) _recBar?.ShowSource(rec.Video); });
+            });
+            RecordingTick();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Starting the recording", ex);
+            _tray.ShowBalloonTip(6000, "Raven", $"Couldn't start recording: {ex.Message}", ToolTipIcon.Warning);
+            _rec = null;
+            _captions.Consented = false;
+        }
+    }
+
+    async Task StopRecordingAsync()
+    {
+        var rec = _rec;
+        if (rec == null) return;
+        _rec = null;
+        _captions.Consented = false;
+        _recBar?.Close();
+        _recBar = null;
+        _tray.Text = "Raven";
+        RecordingTick();
+        var result = await Task.Run(rec.Stop);
+        _tray.ShowBalloonTip(6000, "Raven", "Recording saved. Raven is writing up the transcript (a few minutes, in the background).", ToolTipIcon.Info);
+        var captions = _captions.Snapshot(result.StartedUtc);
+        void Status(string s) => OnUi(() => { _recStatusItem.Text = s; _recStatusItem.Visible = true; });
+        var record = await Task.Run(() => MeetingTranscriber.ProcessAsync(result, captions, _cfg.MyName, Status));
+        if (record == null)
+        {
+            _tray.ShowBalloonTip(8000, "Raven", $"The recording is saved in {result.Folder}, but Raven couldn't write up the transcript. See the log.", ToolTipIcon.Warning);
+            return;
+        }
+        SavePendingRecording(record);
+        await SendPendingRecordingsAsync();
+    }
+
+    /// <summary>Runs a small screen update on the app's own thread (from background work).</summary>
+    void OnUi(Action a)
+    {
+        if (_ui == null) return;
+        _ui.Post(_ => { try { a(); } catch (Exception ex) { Log.Error("Screen update", ex); } }, null);
+    }
+
+    static string PendingFolder => Path.Combine(AgentConfig.DataFolder, "pending-recordings");
+
+    /// <summary>Kept on disk until Clerical Guru has it, so a transcript is never lost to a dropped connection.</summary>
+    static void SavePendingRecording(LiveTranscriptRecord r)
+    {
+        try
+        {
+            Directory.CreateDirectory(PendingFolder);
+            File.WriteAllText(Path.Combine(PendingFolder, r.MeetingKey + ".json"), System.Text.Json.JsonSerializer.Serialize(r, Json.Options));
+        }
+        catch (Exception ex) { Log.Error("Saving the transcript for upload", ex); }
+    }
+
+    async Task SendPendingRecordingsAsync()
+    {
+        if (!_cfg.IsConfigured || !Directory.Exists(PendingFolder)) return;
+        foreach (var file in Directory.GetFiles(PendingFolder, "*.json").Take(2))
+        {
+            try
+            {
+                var r = System.Text.Json.JsonSerializer.Deserialize<LiveTranscriptRecord>(File.ReadAllText(file), Json.Options);
+                if (r == null) { File.Delete(file); continue; }
+                var res = await _client.SendAsync(_cfg.IngestUrl, _cfg.AgentKey, new IngestPayload
+                {
+                    DeviceId = _cfg.DeviceId, AgentVersion = Version, PollOnly = true, LiveTranscripts = new() { r },
+                }, slow: true);
+                if (!res.Ok) { Log.Info($"Transcript upload will be retried: {res.Message}"); return; }
+                File.Delete(file);
+                Log.Info($"Transcript sent: {r.Title} ({r.Lines.Count} lines)");
+                _tray.ShowBalloonTip(6000, "Raven", $"The transcript of \"{r.Title}\" is in Clerical Guru: open the meeting to see it and make the summary.", ToolTipIcon.Info);
+            }
+            catch (Exception ex) { Log.Error("Sending a recorded transcript", ex); }
+        }
+    }
+
+    void ChooseRecordingsFolder()
+    {
+        using var dlg = new FolderBrowserDialog { Description = "Where should Raven save meeting recordings?", SelectedPath = _cfg.RecordingsFolder, UseDescriptionForTitle = true };
+        if (dlg.ShowDialog() != DialogResult.OK) return;
+        _cfg.RecordingsFolder = dlg.SelectedPath;
+        _cfg.Save();
+    }
+
     void SetPrivate(bool on)
     {
         _cfg.PrivateMode = on;
         _cfg.Save();
         if (on) _sampler.Flush();
+        if (on) { _recPrompt?.Close(); if (_rec != null) _ = StopRecordingAsync(); }
         _tray.Icon = MakeIcon(on);
         Log.Info(on ? "Private mode on" : "Private mode off");
         RefreshStatus();
@@ -659,6 +861,14 @@ sealed class TrayApp : ApplicationContext
 
     void Shutdown()
     {
+        if (_rec != null)
+        {
+            if (MessageBox.Show("A meeting is being recorded. Stop the recording and exit?\n\n(The recording is kept, but Raven won't write up the transcript.)",
+                    "Raven", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            try { _rec.Stop(); } catch (Exception ex) { Log.Error("Stopping the recording", ex); }
+            _rec = null;
+        }
+        _recTimer.Stop();
         Log.Info("Agent exiting");
         _sampleTimer.Stop();
         _uploadTimer.Stop();

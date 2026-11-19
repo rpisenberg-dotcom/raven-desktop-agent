@@ -9,7 +9,7 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>RavenAgent</AssemblyName>
     <RootNamespace>RavenAgent</RootNamespace>
-    <Version>0.8.4</Version>
+    <Version>0.9.0</Version>
     <Product>Raven Desktop Agent</Product>
     <Company>Clerical Guru Inc.</Company>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -18,5 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\RavenAgent.Core\RavenAgent.Core.csproj" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="NAudio.Core" Version="2.2.1" />
   </ItemGroup>
 </Project>

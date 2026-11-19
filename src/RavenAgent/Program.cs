@@ -9,7 +9,10 @@ static class Program
         if (args.Length > 0 && args[0].StartsWith("ravenagent:", StringComparison.OrdinalIgnoreCase))
         {
             Application.EnableVisualStyles();
-            OutlookOpener.Open(args[0]);
+            if (Uri.TryCreate(args[0], UriKind.Absolute, out var link) && link.Host.Equals("recording", StringComparison.OrdinalIgnoreCase))
+                RecordingLink.Open(link);
+            else
+                OutlookOpener.Open(args[0]);
             return;
         }
 

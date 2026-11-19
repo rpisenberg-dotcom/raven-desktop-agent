@@ -166,6 +166,10 @@ public sealed record LiveTranscriptRecord
     /// <summary>Position of the first line here in the whole transcript.</summary>
     public int FromLine { get; init; }
     public List<LiveTranscriptLine> Lines { get; init; } = new();
+    /// <summary>"captions" (live captions copied during the call) or "recording" (Raven's own recording, transcribed afterwards).</summary>
+    public string? Source { get; init; }
+    /// <summary>Where the recording was saved on Raven's computer.</summary>
+    public string? RecordingFile { get; init; }
 }
 
 public sealed record LiveTranscriptLine

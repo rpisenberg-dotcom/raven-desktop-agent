@@ -31,6 +31,24 @@ sealed class AgentConfig
     /// <summary>Copy Teams live captions into the meeting while Teams is recording/transcribing it.</summary>
     public bool CaptureCaptions { get; set; } = true;
 
+    // Meeting recordings (on this computer, only after Raven confirms everyone was told)
+    /// <summary>Ask "Record this meeting?" when a Teams / Zoom / browser meeting starts.</summary>
+    public bool OfferRecording { get; set; } = true;
+    /// <summary>Last video choice: window (the meeting window), screen, or none (sound only).</summary>
+    public string RecordVideo { get; set; } = "window";
+    public string RecordingsFolder { get; set; } = DefaultRecordingsFolder();
+    public string RecordingNotice { get; set; } = "Heads-up: I'm recording and transcribing this meeting for my notes. Let me know if you'd rather I didn't.";
+    /// <summary>Raven's name on her own lines of a transcript (the captions' version, e.g. "Raven Pick", is used when available).</summary>
+    public string MyName { get; set; } = "Raven";
+
+    /// <summary>OneDrive (backed up), or Documents when there's no OneDrive.</summary>
+    public static string DefaultRecordingsFolder()
+    {
+        var od = Environment.GetEnvironmentVariable("OneDriveCommercial") ?? Environment.GetEnvironmentVariable("OneDrive");
+        var root = !string.IsNullOrEmpty(od) && Directory.Exists(od) ? od : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        return Path.Combine(root, "Raven Recordings");
+    }
+
     // Sync bookmarks
     public DateTime? LastMailSyncUtc { get; set; }
     public bool OutlookIdsBackfilled { get; set; }
