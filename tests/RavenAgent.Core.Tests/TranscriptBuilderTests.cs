@@ -81,4 +81,13 @@ public class TranscriptBuilderTests
         var kept = DropRepeats(segs);
         Assert.Equal(new[] { "Let's look at the invoices.", "I'm going to go ahead and record this meeting.", "Thanks, talk soon." }, kept.Select(k => k.Text));
     }
+
+    [Fact]
+    public void Ignores_teams_screen_text_as_a_speaker()
+    {
+        var others = new List<Seg> { new(10, 14, "Maybe we want to show options for some reason.") };
+        var captions = new List<Caption> { new("Captions will be shown in:", "Maybe we want to show options for some reason", 11) };
+        var line = Assert.Single(Build(new List<Seg>(), others, captions, "Raven"));
+        Assert.Equal("Other participant", line.Speaker);
+    }
 }

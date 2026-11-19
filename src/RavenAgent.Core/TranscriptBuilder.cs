@@ -77,8 +77,14 @@ public static class TranscriptBuilder
         return (double)shared / Math.Min(wa.Count, wb.Count);
     }
 
+    /// <summary>Teams' own on-screen text ("Captions will be shown in: English") sometimes reads like a speaker.</summary>
+    static bool IsPerson(string speaker) =>
+        !string.IsNullOrWhiteSpace(speaker) && speaker.Length <= 60 && !speaker.TrimEnd().EndsWith(':')
+        && !speaker.Contains("caption", StringComparison.OrdinalIgnoreCase) && !speaker.Contains("language", StringComparison.OrdinalIgnoreCase);
+
     public static List<Line> Build(List<Seg> mine, List<Seg> others, List<Caption> captions, string myName)
     {
+        captions = captions.Where(c => IsPerson(c.Speaker)).ToList();
         // 1. Without a headset, Raven's microphone also hears the other people through her speakers. Those echoes
         //    show up on her track at the same moment as on theirs, with the same words: drop them from hers.
         var myOwn = mine.Where(m => !others.Any(o => o.From - 1.5 < m.To && m.From < o.To + 1.5 && Similar(m.Text, o.Text) >= 0.6)).ToList();

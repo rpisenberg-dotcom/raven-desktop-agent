@@ -36,23 +36,65 @@ static class MeetingTranscriber
                 main = Path.Combine(r.Folder, $"{safe}.m4a");
                 if (File.Exists(audio)) File.Move(audio, main, true);
             }
+            else if (r.Parts.Count == 1)
+            {
+                var part = r.Parts[0];
+                var output = Path.Combine(r.Folder, $"{safe}.mp4");
+                var ok = await RunAsync(MeetingTools.Ffmpeg, new List<string>
+                {
+                    "-hide_banner", "-loglevel", "error", "-y", "-i", part.File,
+                    "-ss", Secs(part.Start), "-t", Secs(Math.Max(1, part.End - part.Start)), "-i", audio,
+                    "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "96k", "-shortest", "-movflags", "+faststart", output,
+                }, 30);
+                main = ok && File.Exists(output) && new FileInfo(output).Length > 0 ? output : part.File;
+                if (main == output) { TryDelete(part.File); TryDelete(audio); }
+            }
             else
             {
+                // One continuous recording: the parts (meeting window, then the shared screen, ...) joined in order on a
+                // common 1920x1080 frame, each held until the next begins so the picture stays in step with the sound
+                status("Joining the video into one recording...");
+                var output = Path.Combine(r.Folder, $"{safe}.mp4");
+                var args = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
+                foreach (var p in r.Parts) { args.Add("-i"); args.Add(p.File); }
+                args.Add("-i"); args.Add(audio);
+                var chains = new List<string>();
                 for (var i = 0; i < r.Parts.Count; i++)
                 {
-                    var part = r.Parts[i];
-                    var name = r.Parts.Count == 1 ? $"{safe}.mp4" : $"{safe} - part {i + 1} ({MeetingRecorder.SafeName(part.Label)}).mp4";
-                    var output = Path.Combine(r.Folder, name);
-                    var ok = await RunAsync(MeetingTools.Ffmpeg, new List<string>
-                    {
-                        "-hide_banner", "-loglevel", "error", "-y", "-i", part.File,
-                        "-ss", Secs(part.Start), "-t", Secs(Math.Max(1, part.End - part.Start)), "-i", audio,
-                        "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "96k", "-shortest", "-movflags", "+faststart", output,
-                    }, 30);
-                    if (ok && File.Exists(output) && new FileInfo(output).Length > 0) { TryDelete(part.File); main ??= output; }
-                    else main ??= part.File; // keep the raw video if joining failed
+                    var p = r.Parts[i];
+                    var span = (i < r.Parts.Count - 1 ? r.Parts[i + 1].Start : p.End) - p.Start;
+                    var lead = i == 0 ? p.Start : 0; // the first part starts a few seconds after the sound
+                    chains.Add($"[{i}:v]fps=10,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,setpts=PTS-STARTPTS,"
+                        + $"tpad=stop_mode=clone:stop_duration=60{(lead > 0.05 ? $",tpad=start_mode=clone:start_duration={Secs(lead)}" : "")},"
+                        + $"trim=duration={Secs(Math.Max(0.5, span + lead))},setpts=PTS-STARTPTS[v{i}]");
                 }
-                if (main != null && main.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) TryDelete(audio);
+                var graph = string.Join(";", chains) + ";" + string.Concat(Enumerable.Range(0, r.Parts.Count).Select(i => $"[v{i}]")) + $"concat=n={r.Parts.Count}:v=1:a=0[v]";
+                args.AddRange(new[] { "-filter_complex", graph, "-map", "[v]", "-map", $"{r.Parts.Count}:a", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                    "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", output });
+                var ok = await RunAsync(MeetingTools.Ffmpeg, args, 120);
+                if (ok && File.Exists(output) && new FileInfo(output).Length > 0)
+                {
+                    main = output;
+                    foreach (var p in r.Parts) TryDelete(p.File);
+                    TryDelete(audio);
+                }
+                else
+                {
+                    // Joining failed: keep each part as its own video so nothing is lost
+                    Log.Info("Couldn't join the video parts; saving them separately");
+                    for (var i = 0; i < r.Parts.Count; i++)
+                    {
+                        var part = r.Parts[i];
+                        var name = Path.Combine(r.Folder, $"{safe} - part {i + 1} ({MeetingRecorder.SafeName(part.Label)}).mp4");
+                        var ok2 = await RunAsync(MeetingTools.Ffmpeg, new List<string>
+                        {
+                            "-hide_banner", "-loglevel", "error", "-y", "-i", part.File,
+                            "-ss", Secs(part.Start), "-t", Secs(Math.Max(1, part.End - part.Start)), "-i", audio,
+                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "96k", "-shortest", "-movflags", "+faststart", name,
+                        }, 30);
+                        if (ok2 && File.Exists(name)) { TryDelete(part.File); main ??= name; } else main ??= part.File;
+                    }
+                }
             }
 
             // 2. Speech to text, one track at a time (Raven / everyone else)
