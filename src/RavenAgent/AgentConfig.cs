@@ -41,12 +41,35 @@ sealed class AgentConfig
     /// <summary>Raven's name on her own lines of a transcript (the captions' version, e.g. "Raven Pick", is used when available).</summary>
     public string MyName { get; set; } = "Raven";
 
-    /// <summary>OneDrive (backed up), or Documents when there's no OneDrive.</summary>
+    /// <summary>Documents\Raven Recordings, or a Clerical Guru OneDrive if there is one. Never a client's OneDrive
+    /// (a work OneDrive on this computer can belong to a client's company).</summary>
     public static string DefaultRecordingsFolder()
     {
-        var od = Environment.GetEnvironmentVariable("OneDriveCommercial") ?? Environment.GetEnvironmentVariable("OneDrive");
-        var root = !string.IsNullOrEmpty(od) && Directory.Exists(od) ? od : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        return Path.Combine(root, "Raven Recordings");
+        foreach (var v in new[] { "OneDriveCommercial", "OneDrive" })
+        {
+            var od = Environment.GetEnvironmentVariable(v);
+            if (!string.IsNullOrEmpty(od) && Directory.Exists(od) && IsOwnOneDrive(od)) return Path.Combine(od, "Raven Recordings");
+        }
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Raven Recordings");
+    }
+
+    /// <summary>A personal OneDrive ("OneDrive", "OneDrive - Personal") or Clerical Guru's own.</summary>
+    static bool IsOwnOneDrive(string path)
+    {
+        var name = Path.GetFileName(path.TrimEnd('\\'));
+        return name.Equals("OneDrive", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Personal", StringComparison.OrdinalIgnoreCase)
+            || name.Replace(" ", "").Contains("clericalguru", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Recordings went to a client's OneDrive in 0.9.0: move the setting back to the safe default.</summary>
+    public bool FixRecordingsFolder()
+    {
+        var name = RecordingsFolder ?? "";
+        var parent = Path.GetFileName(Path.GetDirectoryName(name.TrimEnd('\\')) ?? "");
+        if (!parent.StartsWith("OneDrive - ", StringComparison.OrdinalIgnoreCase) || IsOwnOneDrive(parent)) return false;
+        RecordingsFolder = DefaultRecordingsFolder();
+        return true;
     }
 
     // Sync bookmarks
@@ -92,6 +115,7 @@ sealed class AgentConfig
         catch { cfg = new(); }
         if (cfg.CalendarDaysAhead == 14) cfg.CalendarDaysAhead = 120; // upgrade the old default
         if (cfg.UploadSeconds < 300) cfg.UploadSeconds = 300; // each upload costs Base44 credits; every 5 minutes is plenty
+        if (cfg.FixRecordingsFolder()) Log.Info($"Recordings folder moved off a client's OneDrive to {cfg.RecordingsFolder}");
         if (string.IsNullOrEmpty(cfg.DeviceId)) cfg.DeviceId = $"{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
         cfg.Save();
         return cfg;

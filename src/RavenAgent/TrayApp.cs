@@ -50,7 +50,7 @@ sealed class TrayApp : ApplicationContext
     readonly List<MeetingSnapRecord> _snaps = new();
     readonly CaptionReader _captions = new();
     readonly System.Threading.Timer _captionTimer;
-    int _captionBusy;
+    int _captionBusy, _captionLooks;
     QuickNoteWindow? _noteWindow;
     SynchronizationContext? _ui;
     // Meeting recordings
@@ -59,7 +59,7 @@ sealed class TrayApp : ApplicationContext
     List<MeetingRecorder.VideoSource> _recSources = new();
     RecordPrompt? _recPrompt;
     RecordingBar? _recBar;
-    bool _inCall;
+    bool _inCall, _autoVideo, _userPickedVideo, _warnedCaptions, _loggedMic;
     DateTime? _callGoneSince;
     readonly ToolStripMenuItem _recStartItem = new("Record this meeting...");
     readonly ToolStripMenuItem _recStopItem = new("Stop recording") { Enabled = false };
@@ -139,7 +139,10 @@ sealed class TrayApp : ApplicationContext
             try
             {
                 if (_cfg.PrivateMode || !_cfg.CaptureCaptions) return;
-                if (CallDetector.ActiveCall() != null || _captions.HasSession) _captions.Tick();
+                // Windows doesn't always report a browser meeting using the microphone, so every other look also
+                // checks for a Teams meeting window when no call is reported
+                _captionLooks++;
+                if (CallDetector.ActiveCall() != null || _captions.HasSession || _captions.Consented || _captionLooks % 2 == 0) _captions.Tick();
             }
             catch (Exception ex) { Log.Error("Captions", ex); }
             finally { Interlocked.Exchange(ref _captionBusy, 0); }
@@ -180,8 +183,14 @@ sealed class TrayApp : ApplicationContext
     {
         try
         {
-            if (_rec != null) _recBar?.Tick(_rec.Elapsed);
-            var call = _cfg.PrivateMode ? null : CallDetector.ActiveCall();
+            if (_rec != null) { _recBar?.Tick(_rec.Elapsed); FollowScreenShare(); WarnIfCaptionsOff(); }
+            var meetingOpen = DateTime.UtcNow - _captions.LastMeetingWindowUtc < TimeSpan.FromSeconds(40);
+            var call = _cfg.PrivateMode ? null : CallDetector.ActiveCall() ?? (meetingOpen ? "Teams" : null);
+            if (meetingOpen && !_loggedMic)
+            {
+                _loggedMic = true; // once per run: what Windows reports using the microphone, for support
+                Log.Info("Meeting window open; microphone in use by: " + string.Join(", ", CallDetector.InUse().Select(x => $"{x.key} ({x.label ?? "?"})")));
+            }
             if (call != null)
             {
                 _callGoneSince = null;
@@ -230,6 +239,9 @@ sealed class TrayApp : ApplicationContext
             Log.Info($"Recording started with notice confirmed: {title}");
             _rec = MeetingRecorder.Start(_cfg.RecordingsFolder, title, app, video);
             _recSources = sources;
+            _autoVideo = false;
+            _userPickedVideo = false;
+            _warnedCaptions = false;
             _captions.Consented = true;
             if (!_rec.HasSound)
             {
@@ -240,11 +252,15 @@ sealed class TrayApp : ApplicationContext
                 return;
             }
             var rec = _rec;
-            _recBar = new RecordingBar(sources, video, s => Task.Run(() =>
+            _recBar = new RecordingBar(sources, video, s =>
             {
-                rec.SwitchVideo(s);
-                OnUi(() => _recBar?.ShowSource(rec.Video));
-            }), () => _ = StopRecordingAsync());
+                _userPickedVideo = true; // her choice: no more automatic switching for this recording
+                _ = Task.Run(() =>
+                {
+                    rec.SwitchVideo(s);
+                    OnUi(() => _recBar?.ShowSource(rec.Video));
+                });
+            }, () => _ = StopRecordingAsync());
             _recBar.Show();
             _tray.Text = "Raven - recording this meeting";
             if (video.Kind != "none" && !MeetingTools.HasFfmpeg)
@@ -290,6 +306,65 @@ sealed class TrayApp : ApplicationContext
         }
         SavePendingRecording(record);
         await SendPendingRecordingsAsync();
+    }
+
+    /// <summary>
+    /// While Raven shares her screen, the meeting window only shows "you're presenting", so the video follows the
+    /// shared screen and goes back to the meeting window when she stops (unless she picked the video herself).
+    /// </summary>
+    void FollowScreenShare()
+    {
+        var rec = _rec;
+        if (rec == null || _recBar == null || _userPickedVideo) return;
+        if (_captions.Sharing && rec.Video.Kind == "window")
+        {
+            var screen = SharedScreen(rec);
+            if (screen == null) return;
+            _autoVideo = true;
+            Log.Info($"Screen sharing started: video follows {screen.Label}");
+            SwitchVideoTo(rec, screen);
+        }
+        else if (!_captions.Sharing && _autoVideo && rec.Video.Kind == "screen")
+        {
+            var window = _recSources.FirstOrDefault(s => s.Kind == "window");
+            _autoVideo = false;
+            if (window == null) return;
+            Log.Info("Screen sharing stopped: video back to the meeting window");
+            SwitchVideoTo(rec, window);
+        }
+    }
+
+    void SwitchVideoTo(MeetingRecorder rec, MeetingRecorder.VideoSource s)
+    {
+        _recBar?.ShowSource(s);
+        _ = Task.Run(() =>
+        {
+            rec.SwitchVideo(s);
+            OnUi(() => { if (_rec == rec) _recBar?.ShowSource(rec.Video); });
+        });
+    }
+
+    /// <summary>The screen being shared: where the browser's "is sharing your screen" bar is, otherwise the screen
+    /// the meeting window isn't on (with two screens), otherwise the only screen.</summary>
+    MeetingRecorder.VideoSource? SharedScreen(MeetingRecorder rec)
+    {
+        var screens = _recSources.Where(s => s.Kind == "screen").ToList();
+        if (screens.Count == 0) return null;
+        if (screens.Count == 1) return screens[0];
+        var bar = MeetingWindows.SharingBar();
+        var meeting = _captions.MeetingWindow;
+        var onScreen = bar != IntPtr.Zero ? MeetingWindows.MonitorOf(bar) : IntPtr.Zero;
+        if (onScreen != IntPtr.Zero) return screens.FirstOrDefault(s => s.Handle == onScreen) ?? screens[0];
+        var meetingScreen = meeting != IntPtr.Zero ? MeetingWindows.MonitorOf(meeting) : IntPtr.Zero;
+        return screens.FirstOrDefault(s => s.Handle != meetingScreen) ?? screens[0];
+    }
+
+    /// <summary>Other people can only be named when Teams' live captions are on: one reminder per recording.</summary>
+    void WarnIfCaptionsOff()
+    {
+        if (_warnedCaptions || _rec == null || _rec.Elapsed < TimeSpan.FromSeconds(40) || !_captions.CaptionsOff) return;
+        _warnedCaptions = true;
+        _tray.ShowBalloonTip(8000, "Raven", "Turn on Live captions in Teams (More → Language and speech) so Raven can tell who's speaking.", ToolTipIcon.Info);
     }
 
     /// <summary>Runs a small screen update on the app's own thread (from background work).</summary>

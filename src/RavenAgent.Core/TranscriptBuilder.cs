@@ -42,6 +42,29 @@ public static class TranscriptBuilder
         return list;
     }
 
+    /// <summary>
+    /// The transcriber sometimes repeats one sentence over quiet stretches ("I'm going to go ahead and record this
+    /// meeting." again and again). Drops a piece that repeats one of the last few, and repeated sentences inside a piece.
+    /// </summary>
+    public static List<Seg> DropRepeats(List<Seg> segs)
+    {
+        static string Norm(string t) => string.Join(' ', Word.Matches(t.ToLowerInvariant()).Select(m => m.Value));
+        var kept = new List<Seg>();
+        foreach (var s in segs)
+        {
+            var sentences = Regex.Split(s.Text, @"(?<=[.!?])\s+").Where(x => x.Trim().Length > 0).ToList();
+            var unique = new List<string>();
+            foreach (var sen in sentences)
+                if (unique.Count == 0 || Norm(unique[^1]) != Norm(sen)) unique.Add(sen.Trim());
+            var text = string.Join(' ', unique);
+            var norm = Norm(text);
+            if (norm.Length == 0) continue;
+            if (kept.Skip(Math.Max(0, kept.Count - 3)).Any(k => Norm(k.Text) == norm)) continue;
+            kept.Add(s with { Text = text });
+        }
+        return kept;
+    }
+
     static HashSet<string> Words(string s) =>
         Word.Matches(s.ToLowerInvariant()).Select(m => m.Value).Where(w => w.Length >= 3).ToHashSet();
 

@@ -66,4 +66,19 @@ public class TranscriptBuilderTests
         Assert.Equal("First point. Second point.", line.Text);
         Assert.Contains("[00:00:00] Raven: First point.", ToText(lines));
     }
+
+    [Fact]
+    public void Drops_invented_repeats()
+    {
+        var segs = new List<Seg>
+        {
+            new(0, 4, "Let's look at the invoices."),
+            new(10, 12, "I'm going to go ahead and record this meeting."),
+            new(14, 16, "I'm going to go ahead and record this meeting."),
+            new(20, 24, "I'm going to go ahead and record this meeting. I'm going to go ahead and record this meeting."),
+            new(30, 33, "Thanks, talk soon."),
+        };
+        var kept = DropRepeats(segs);
+        Assert.Equal(new[] { "Let's look at the invoices.", "I'm going to go ahead and record this meeting.", "Thanks, talk soon." }, kept.Select(k => k.Text));
+    }
 }

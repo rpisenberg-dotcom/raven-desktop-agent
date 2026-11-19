@@ -264,6 +264,27 @@ static class MeetingWindows
 
     public static bool IsMinimized(IntPtr h) => IsIconic(h);
 
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+    public static IntPtr MonitorOf(IntPtr hwnd) => MonitorFromWindow(hwnd, 2);
+
+    /// <summary>The browser's little "teams.live.com is sharing your screen" bar, which sits on the shared screen.</summary>
+    public static IntPtr SharingBar()
+    {
+        var found = IntPtr.Zero;
+        EnumWindows((h, _) =>
+        {
+            if (!IsWindowVisible(h)) return true;
+            var sb = new StringBuilder(512);
+            GetWindowText(h, sb, sb.Capacity);
+            var t = sb.ToString();
+            if (t.Contains("is sharing your screen", StringComparison.OrdinalIgnoreCase) || t.Contains("is sharing a window", StringComparison.OrdinalIgnoreCase)
+                || t.Contains("Sharing control bar", StringComparison.OrdinalIgnoreCase))
+            { found = h; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
     /// <summary>Meeting window first (if found), then each screen, then sound only.</summary>
     public static List<MeetingRecorder.VideoSource> Sources((IntPtr hwnd, string title)? meeting)
     {

@@ -64,9 +64,11 @@ static class MeetingTranscriber
                 var small = Path.ChangeExtension(wav, ".16k.wav");
                 await RunAsync(MeetingTools.Ffmpeg, new List<string> { "-hide_banner", "-loglevel", "error", "-y", "-i", wav, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", small }, 30);
                 var outBase = Path.ChangeExtension(wav, null) + "-text";
-                await RunAsync(MeetingTools.Whisper, new List<string> { "-m", MeetingTools.Model, "-f", small, "-l", "en", "-oj", "-of", outBase, "-np", "-t", threads }, 180);
+                var args = new List<string> { "-m", MeetingTools.Model, "-f", small, "-l", "en", "-oj", "-of", outBase, "-np", "-t", threads };
+                if (File.Exists(MeetingTools.VadModel)) args.AddRange(new[] { "--vad", "-vm", MeetingTools.VadModel }); // skip the silences
+                await RunAsync(MeetingTools.Whisper, args, 180);
                 var json = outBase + ".json";
-                var segs = File.Exists(json) ? TranscriptBuilder.ParseWhisper(await File.ReadAllTextAsync(json)) : new();
+                var segs = File.Exists(json) ? TranscriptBuilder.DropRepeats(TranscriptBuilder.ParseWhisper(await File.ReadAllTextAsync(json))) : new();
                 TryDelete(small); TryDelete(json);
                 Log.Info($"Transcribed {label}: {segs.Count} pieces");
                 return segs;

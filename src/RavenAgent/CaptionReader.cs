@@ -33,6 +33,14 @@ sealed class CaptionReader
 
     /// <summary>Raven is recording this meeting herself (she confirmed everyone was told).</summary>
     public volatile bool Consented;
+    /// <summary>When a Teams meeting window (the one with the Leave button) was last seen. Also how a meeting is
+    /// noticed when Windows doesn't report the browser using the microphone.</summary>
+    public DateTime LastMeetingWindowUtc { get; private set; } = DateTime.MinValue;
+    public IntPtr MeetingWindow { get; private set; }
+    /// <summary>Raven is sharing her screen in the meeting (Teams shows "Stop sharing").</summary>
+    public volatile bool Sharing;
+    /// <summary>Recording, but Teams' live captions aren't showing (so other speakers can't be named).</summary>
+    public volatile bool CaptionsOff;
     readonly object _lock = new();
 
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
@@ -48,10 +56,17 @@ sealed class CaptionReader
     public void Tick()
     {
         var win = FindMeetingWindow();
-        if (win == null) { EndCurrent(TimeSpan.FromMinutes(2)); return; }
+        if (win == null) { Sharing = false; EndCurrent(TimeSpan.FromMinutes(2)); return; }
+        LastMeetingWindowUtc = DateTime.UtcNow;
+        MeetingWindow = win.Value.hwnd;
         try
         {
             var root = AutomationElement.FromHandle(win.Value.hwnd);
+            Sharing = root.FindFirst(TreeScope.Descendants, new AndCondition(
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+                new OrCondition(
+                    new PropertyCondition(AutomationElement.NameProperty, "Stop sharing"),
+                    new PropertyCondition(AutomationElement.NameProperty, "Stop presenting")))) != null;
             var transcribing = root.FindFirst(TreeScope.Descendants, new OrCondition(
                 new PropertyCondition(AutomationElement.AutomationIdProperty, "recording-indicator-custom"),
                 new PropertyCondition(AutomationElement.AutomationIdProperty, "recording-indicator"),
@@ -60,6 +75,7 @@ sealed class CaptionReader
             var panel = root.FindFirst(TreeScope.Descendants, new AndCondition(
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group),
                 new PropertyCondition(AutomationElement.NameProperty, "Live Captions")));
+            CaptionsOff = panel == null;
             if (panel == null) return;
             var seen = ReadPanel(panel);
             if (seen.Count == 0) return;

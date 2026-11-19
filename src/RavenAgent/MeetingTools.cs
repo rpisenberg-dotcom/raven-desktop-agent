@@ -13,15 +13,18 @@ static class MeetingTools
     const string FfmpegZip = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
     const string WhisperZip = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip";
     const string ModelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
+    // Voice activity detection: skips silence, which otherwise makes the transcriber invent repeated sentences
+    const string VadUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
 
     public static string Folder => Path.Combine(AgentConfig.DataFolder, "tools");
     public static string Ffmpeg => Path.Combine(Folder, "ffmpeg.exe");
     public static string Whisper => Path.Combine(Folder, "whisper", "whisper-cli.exe");
     public static string Model => Path.Combine(Folder, "ggml-base.en.bin");
+    public static string VadModel => Path.Combine(Folder, "ggml-silero-v5.1.2.bin");
 
     public static bool HasFfmpeg => File.Exists(Ffmpeg);
     public static bool HasWhisper => File.Exists(Whisper) && File.Exists(Model);
-    public static bool Ready => HasFfmpeg && HasWhisper;
+    public static bool Ready => HasFfmpeg && HasWhisper && File.Exists(VadModel);
 
     static readonly SemaphoreSlim Gate = new(1, 1);
     public static string Status { get; private set; } = "";
@@ -76,6 +79,11 @@ static class MeetingTools
                 Log.Info(Status);
                 await DownloadAsync(http, ModelUrl, Model + ".part");
                 File.Move(Model + ".part", Model, true);
+            }
+            if (!File.Exists(VadModel))
+            {
+                try { await DownloadAsync(http, VadUrl, VadModel + ".part"); File.Move(VadModel + ".part", VadModel, true); }
+                catch (Exception ex) { Log.Error("Silence detector download (transcripts still work without it)", ex); }
             }
             Status = "Ready";
             Log.Info("Meeting recording tools ready");
